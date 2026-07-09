@@ -1,4 +1,4 @@
 window.PORTAL_CONFIG = {
-  SUPABASE_URL: "https://xltqyqcuunlcdzadrdnm.supabase.co/rest/v1/",
+  SUPABASE_URL: "https://xltqyqcuunlcdzadrdnm.supabase.co",
   SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhsdHF5cWN1dW5sY2R6YWRyZG5tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMwMjc5MzgsImV4cCI6MjA5ODYwMzkzOH0.TVEyvNjgGNpzl5Zsyf_ZCdfQpCBk2SqGQCGB0W8NQl8"
 };
