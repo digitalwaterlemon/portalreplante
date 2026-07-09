@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Portal Replante</title>
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+    <section id="loginView" class="login-page oculto">
+        <main class="login-box">
+            <div class="login-brand">
+                <span class="brand-mark">R</span>
+                <div>
+                    <h1>Portal Replante</h1>
+                    <p>Projetos e oportunidades ambientais</p>
+                </div>
+            </div>
+            <p class="login-mode">Login via Supabase</p>
+            <p id="loginErro" class="alerta oculto"></p>
+            <form id="loginForm" class="login-form">
+                <label>
+                    Email
+                    <input id="email" type="email" autocomplete="username" required autofocus>
+                </label>
+                <label>
+                    Senha
+                    <input id="senha" type="password" autocomplete="current-password" required>
+                </label>
+                <button type="submit">Entrar</button>
+            </form>
+        </main>
+    </section>
+
+    <section id="appView" class="app-shell oculto">
+        <aside class="sidebar">
+            <a class="brand" href="#dashboard" data-route="dashboard">
+                <span class="brand-mark">R</span>
+                <span>
+                    <strong>Replante</strong>
+                    <small>Portal interno</small>
+                </span>
+            </a>
+            <nav class="nav">
+                <a href="#dashboard" data-route="dashboard">Inicio</a>
+                <a href="#projetos" data-route="projetos">Projetos</a>
+                <a href="#licitacoes" data-route="licitacoes">Licitacoes</a>
+                <a href="#regras" data-route="regras">Regras PRAD</a>
+            </nav>
+            <div class="sidebar-footer">
+                <span id="usuarioAtual"></span>
+                <button id="logoutBtn" class="botao secundario" type="button">Sair</button>
+            </div>
+        </aside>
+
+        <main class="conteudo">
+            <header class="topbar">
+                <div>
+                    <p id="eyebrow" class="eyebrow">Visao geral</p>
+                    <h1 id="pageTitle">Inicio</h1>
+                </div>
+                <div id="topbarActions" class="acoes-topo"></div>
+            </header>
+
+            <p id="mensagem" class="mensagem oculto"></p>
+            <section id="conteudo"></section>
+        </main>
+    </section>
+
+    <script src="./config.js"></script>
+    <script type="module" src="./app.js"></script>
+</body>
+</html>
