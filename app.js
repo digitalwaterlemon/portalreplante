@@ -48,6 +48,18 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
+function safeExternalUrl(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return "";
+    try {
+        const parsed = new URL(text);
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.href;
+    } catch (_error) {
+        return "";
+    }
+    return "";
+}
+
 function setMensagem(texto, tipo = "ok") {
     mensagem.textContent = texto;
     mensagem.classList.toggle("oculto", !texto);
@@ -309,6 +321,12 @@ function renderLicitacoes() {
 }
 
 function renderOportunidadeCard(o) {
+    const url = safeExternalUrl(o.url);
+    const titulo = escapeHtml(o.titulo);
+    const tituloHtml = url
+        ? `<a class="titulo" href="${escapeHtml(url)}" target="_blank" rel="noopener">${titulo}</a>`
+        : `<span class="titulo">${titulo}</span>`;
+
     return `
         <div class="card prioridade-card-${escapeHtml(o.prioridade_prad || "irrelevante")} status-${escapeHtml(o.status)}">
             <div class="card-topo">
@@ -316,7 +334,7 @@ function renderOportunidadeCard(o) {
                 ${o.prioridade_prad && o.prioridade_prad !== "irrelevante" ? `<span class="prad-badge prioridade-${escapeHtml(o.prioridade_prad)}">PRAD ${escapeHtml(o.prioridade_prad)} · ${o.pontuacao_prad || 0}</span>` : ""}
                 <span class="data">encontrado em ${escapeHtml(o.data_encontrado || "")}</span>
             </div>
-            <a class="titulo" href="${escapeHtml(o.url)}" target="_blank" rel="noopener">${escapeHtml(o.titulo)}</a>
+            ${tituloHtml}
             ${o.descricao ? `<p class="descricao">${escapeHtml(o.descricao)}</p>` : ""}
             ${o.motivos_prad ? `<p class="motivos">Sinais: ${escapeHtml(o.motivos_prad)}</p>` : ""}
             ${o.data_publicacao ? `<p class="pub">Publicado: ${escapeHtml(o.data_publicacao)}</p>` : ""}
