@@ -643,8 +643,8 @@ function renderProjetoDetalhe(projeto) {
                     <button type="submit">Salvar projeto</button>
                 </div>
                 <div class="projeto-topo">
-                    <input class="titulo-editavel" name="nome" value="${escapeHtml(projeto.nome)}" required>
-                    <select name="status">${opcoesSelect(PROJETO_STATUS, projeto.status)}</select>
+                    <label>Nome do projeto<input name="nome" value="${escapeHtml(projeto.nome)}" required></label>
+                    <label>Status<select name="status">${opcoesSelect(PROJETO_STATUS, projeto.status)}</select></label>
                 </div>
                 <div class="form-grid">
                     <label>Cliente<input name="cliente" value="${escapeHtml(projeto.cliente || "")}"></label>

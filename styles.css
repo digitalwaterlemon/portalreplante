@@ -854,14 +854,6 @@ button.perigo:disabled {
     margin-bottom: 0.75rem;
 }
 
-.titulo-editavel {
-    border: 0;
-    border-bottom: 1px solid var(--linha);
-    background: transparent;
-    font-weight: 800;
-    font-size: 1.05rem;
-}
-
 .modal-projeto input,
 .modal-projeto select,
 .modal-projeto textarea {
