@@ -606,6 +606,14 @@ function bindProjetoDetalhe(container) {
     container.querySelectorAll(".proposta-form").forEach((form) => form.addEventListener("submit", salvarProposta));
     container.querySelectorAll(".novo-proposta-item-form").forEach((form) => form.addEventListener("submit", criarPropostaItem));
     container.querySelectorAll(".novo-projeto-link-form").forEach((form) => form.addEventListener("submit", criarProjetoLink));
+    const formExcluir = container.querySelector(".excluir-projeto-form");
+    if (formExcluir) {
+        const projeto = cache.projetos.find((item) => item.id === Number(formExcluir.dataset.id));
+        formExcluir.confirmacao.addEventListener("input", () => {
+            formExcluir.querySelector("button").disabled = formExcluir.confirmacao.value.trim() !== projeto?.nome?.trim();
+        });
+        formExcluir.addEventListener("submit", excluirProjeto);
+    }
 }
 
 function renderProjetoDetalhe(projeto) {
@@ -682,6 +690,16 @@ function renderProjetoDetalhe(projeto) {
                 <div class="historico-lista">
                     ${historico.length ? historico.map(renderHistoricoItem).join("") : `<p class="vazio compacto">Nenhum evento registrado ainda.</p>`}
                 </div>
+            </section>
+            <section class="excluir-projeto">
+                <h3>Excluir projeto</h3>
+                <p class="subtexto">Remove o projeto junto com plantio, manutenções, lançamentos, propostas, links e histórico. Esta ação não pode ser desfeita.</p>
+                <form class="excluir-projeto-form" data-id="${projeto.id}">
+                    <label>Para confirmar, digite o nome do projeto: <strong>${escapeHtml(projeto.nome)}</strong>
+                        <input name="confirmacao" autocomplete="off" spellcheck="false">
+                    </label>
+                    <button class="perigo" type="submit" disabled>Excluir projeto</button>
+                </form>
             </section>
         </article>
     `;
@@ -874,6 +892,21 @@ async function salvarProjeto(event) {
     if (error) return setMensagem(error.message, "erro");
     setMensagem("Projeto salvo.");
     await render();
+}
+
+async function excluirProjeto(event) {
+    event.preventDefault();
+    const id = Number(event.target.dataset.id);
+    const projeto = cache.projetos.find((item) => item.id === id);
+    if (!projeto || event.target.confirmacao.value.trim() !== projeto.nome.trim()) {
+        return setMensagem("Digite o nome do projeto exatamente como aparece para confirmar.", "erro");
+    }
+    const { data, error } = await supabase.from("projetos").delete().eq("id", id).select("id");
+    if (error) return setMensagem(error.message, "erro");
+    if (!data?.length) return setMensagem("O projeto não foi excluído. Verifique sua permissão.", "erro");
+    fecharProjetoModal();
+    await render();
+    setMensagem(`Projeto "${projeto.nome}" excluído.`);
 }
 
 function normalizarProjeto(dados) {
@@ -1731,7 +1764,14 @@ async function iniciar() {
     session = current.data.session;
     atualizarAuthView();
     supabase.auth.onAuthStateChange((_event, newSession) => {
+        // Ao voltar para a aba ou renovar o token, o Supabase reemite eventos
+        // para o mesmo usuario; re-renderizar nesses casos fecha modais abertos.
+        const mesmoUsuario = session?.user?.id === newSession?.user?.id;
         session = newSession;
+        if (mesmoUsuario) {
+            atualizarAvatarTopo();
+            return;
+        }
         atualizarAuthView();
     });
 }
