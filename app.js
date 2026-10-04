@@ -24,7 +24,6 @@ const PROJETO_STATUS = [
     ["monitoramento", "Monitoramento"],
     ["concluido", "Concluído"],
     ["pausado", "Pausado"],
-    ["arquivado", "Arquivado"],
 ];
 const TIPOS_REGRA = ["positivo", "negativo", "combinacao"];
 const INTERVENCAO_STATUS = [
@@ -191,6 +190,14 @@ function formatData(valor, dataExata = true) {
     return `${dia}/${mes}/${ano}`;
 }
 
+// Data da intervencao, com o periodo quando o servico dura mais de um dia.
+function formatPeriodo(item) {
+    if (item.data_exata && item.data_fim && item.data_fim !== item.data_prevista) {
+        return `${formatData(item.data_prevista)} a ${formatData(item.data_fim)}`;
+    }
+    return formatData(item.data_prevista, item.data_exata);
+}
+
 function dataPrimeiroDiaMes(valor) {
     if (!valor) return null;
     return `${valor}-01`;
@@ -204,18 +211,37 @@ function configuracaoAlerta(chave) {
     return cache.configuracoesAlertas.find((item) => item.chave === chave);
 }
 
+// Contato com o cliente antes de uma manutencao aberta: na "Data para contatar"
+// (contato_cliente_em) ou, sem ela, na data prevista menos os dias de
+// antecedencia configurados. Retorna null quando nao ha contato a acompanhar.
+function contatoManutencao(item, hoje = dataIsoLocal(new Date())) {
+    if (item.tipo !== "manutencao" || ["executada", "cancelada"].includes(item.status)) return null;
+    const configuracao = configuracaoAlerta("confirmacao_manutencao") || { dias_antecedencia: 7 };
+    const data = item.contato_cliente_em
+        || (item.data_prevista ? subtrairDias(item.data_prevista, Number(configuracao.dias_antecedencia || 0)) : null);
+    if (!data) return null;
+    const situacao = item.contato_feito ? "feito" : data < hoje ? "atrasado" : "pendente";
+    return { data, situacao };
+}
+
 function alertasConfirmacaoManutencao() {
     const configuracao = configuracaoAlerta("confirmacao_manutencao") || { ativo: true, dias_antecedencia: 7 };
     if (!configuracao?.ativo) return [];
-    const hoje = new Date();
-    hoje.setHours(0, 0, 0, 0);
-    const limite = new Date(hoje);
-    limite.setDate(limite.getDate() + Number(configuracao.dias_antecedencia || 0));
-    return cache.intervencoes.filter((item) => {
-        if (item.tipo !== "manutencao" || !item.data_prevista || item.contato_cliente_em || ["executada", "cancelada"].includes(item.status)) return false;
-        const data = new Date(`${item.data_prevista}T12:00:00`);
-        return data >= hoje && data <= limite;
-    });
+    const hoje = dataIsoLocal(new Date());
+    return intervencoesProjetosAtivos()
+        .map((item) => ({ ...item, contato: contatoManutencao(item, hoje) }))
+        .filter((item) => item.contato && item.contato.situacao !== "feito" && item.contato.data <= hoje)
+        .sort((a, b) => a.contato.data.localeCompare(b.contato.data));
+}
+
+function buscarProjeto(id) {
+    return cache.projetos.find((item) => item.id === id) || cache.projetosArquivados.find((item) => item.id === id);
+}
+
+// Plantios e manutencoes de projetos arquivados nao entram em agenda, alertas e indicadores.
+function intervencoesProjetosAtivos() {
+    const ativos = new Set(cache.projetos.map((p) => p.id));
+    return cache.intervencoes.filter((item) => ativos.has(item.projeto_id));
 }
 
 function opcoesSelect(opcoes, atual) {
@@ -276,7 +302,8 @@ async function carregarDados() {
         ...row,
         fonte_nome: row.fontes?.nome || "",
     }));
-    cache.projetos = projetos.data || [];
+    cache.projetos = (projetos.data || []).filter((p) => !p.arquivado_em);
+    cache.projetosArquivados = (projetos.data || []).filter((p) => p.arquivado_em);
     cache.regras = regras.data || [];
     cache.intervencoes = intervencoes.data || [];
     cache.atividades = atividades.data || [];
@@ -315,14 +342,14 @@ async function render() {
 function renderDashboard() {
     setPage("Início", "Visão geral", `<a class="botao" href="#projetos">Projetos</a><a class="botao secundario" href="#calendario">Calendário</a>`);
 
-    const projetosAtivos = cache.projetos.filter((p) => !["concluido", "arquivado"].includes(p.status));
+    const projetosAtivos = cache.projetos.filter((p) => p.status !== "concluido");
     const projetosExecucao = cache.projetos.filter((p) => ["contratado", "em_execucao", "monitoramento"].includes(p.status));
-    const intervencoesPendentes = cache.intervencoes.filter((i) => !["executada", "cancelada"].includes(i.status));
+    const intervencoesPendentes = intervencoesProjetosAtivos().filter((i) => !["executada", "cancelada"].includes(i.status));
     const licitacoesAtivas = cache.oportunidades.filter((o) => !["perdido", "descartado"].includes(o.status));
     const licitacoesRelevantes = licitacoesAtivas.filter((o) => ["alta", "media"].includes(o.prioridade_prad));
     const licitacoesAlta = licitacoesAtivas.filter((o) => o.prioridade_prad === "alta");
     const alertasConfirmacao = alertasConfirmacaoManutencao();
-    const projetosRecentes = cache.projetos.filter((p) => p.status !== "arquivado").slice(0, 5);
+    const projetosRecentes = cache.projetos.slice(0, 5);
     const licitacoesRecentes = [...licitacoesRelevantes]
         .sort((a, b) => (b.pontuacao_prad || 0) - (a.pontuacao_prad || 0))
         .slice(0, 5);
@@ -348,10 +375,10 @@ function renderDashboard() {
                 `).join("")}</div>` : `<p class="vazio compacto">Nenhuma licitação relevante ativa no momento.</p>`}
             </div>
             <div class="painel painel-alertas">
-                <div class="painel-topo"><h2>Confirmar manutenções</h2><a href="#configuracoes">Configurar</a></div>
+                <div class="painel-topo"><h2>Contatar clientes</h2><a href="#configuracoes">Configurar</a></div>
                 ${alertasConfirmacao.length ? `<div class="lista-compacta">${alertasConfirmacao.map((item) => `
-                    <article><div><strong>${escapeHtml(item.titulo)}</strong><span>${escapeHtml(item.projetos?.nome || "Projeto")} · ${escapeHtml(formatData(item.data_prevista, item.data_exata))}</span></div><a href="#calendario">Abrir agenda</a></article>
-                `).join("")}</div>` : `<p class="vazio compacto">Nenhuma confirmação pendente dentro do prazo configurado.</p>`}
+                    <article><div><strong>${escapeHtml(item.titulo)}</strong><span>${escapeHtml(item.projetos?.nome || "Projeto")} · contatar ${item.contato.situacao === "atrasado" ? "desde" : "hoje,"} ${escapeHtml(formatData(item.contato.data))} · manutenção ${escapeHtml(formatPeriodo(item))}</span></div><a href="#calendario?mes=${escapeHtml(String(item.data_prevista || item.contato.data).slice(0, 7))}">Abrir agenda</a></article>
+                `).join("")}</div>` : `<p class="vazio compacto">Nenhum contato com cliente pendente para hoje.</p>`}
             </div>
         </section>
     `;
@@ -362,10 +389,11 @@ function renderProjetos() {
     const params = new URLSearchParams(location.hash.split("?")[1] || "");
     const statusFiltro = params.get("status") || "ativos";
     const busca = params.get("busca") || "";
-    const visualizacao = params.get("visualizacao") === "kanban" ? "kanban" : "lista";
-    let projetos = [...cache.projetos];
+    const visualizacao = params.get("visualizacao") === "kanban" && statusFiltro !== "arquivados" ? "kanban" : "lista";
+    let projetos = statusFiltro === "arquivados" ? [...cache.projetosArquivados] : [...cache.projetos];
 
-    if (statusFiltro === "ativos") projetos = projetos.filter((p) => !["concluido", "arquivado"].includes(p.status));
+    if (statusFiltro === "arquivados") projetos.sort((a, b) => String(b.arquivado_em).localeCompare(String(a.arquivado_em)));
+    else if (statusFiltro === "ativos") projetos = projetos.filter((p) => p.status !== "concluido");
     else if (statusFiltro !== "todos") projetos = projetos.filter((p) => p.status === statusFiltro);
     if (busca) {
         const termo = busca.toLowerCase();
@@ -379,13 +407,13 @@ function renderProjetos() {
     const statusKanban = statusFiltro === "todos"
         ? PROJETO_STATUS
         : statusFiltro === "ativos"
-            ? PROJETO_STATUS.filter(([valor]) => !["concluido", "arquivado"].includes(valor))
+            ? PROJETO_STATUS.filter(([valor]) => valor !== "concluido")
             : PROJETO_STATUS.filter(([valor]) => valor === statusFiltro);
 
     conteudo.innerHTML = `
         <form id="filtroProjetos" class="filtros">
             <input type="hidden" name="visualizacao" value="${visualizacao}">
-            <label>Status:<select name="status"><option value="ativos" ${statusFiltro === "ativos" ? "selected" : ""}>Ativos</option><option value="todos" ${statusFiltro === "todos" ? "selected" : ""}>Todos</option>${opcoesSelect(PROJETO_STATUS, statusFiltro)}</select></label>
+            <label>Status:<select name="status"><option value="ativos" ${statusFiltro === "ativos" ? "selected" : ""}>Ativos</option><option value="todos" ${statusFiltro === "todos" ? "selected" : ""}>Todos</option>${opcoesSelect(PROJETO_STATUS, statusFiltro)}<option value="arquivados" ${statusFiltro === "arquivados" ? "selected" : ""}>Arquivados</option></select></label>
             <label class="busca">Buscar:<input name="busca" value="${escapeHtml(busca)}" placeholder="cliente, local, projeto"></label>
             <button type="submit">Filtrar</button>
             <nav class="seletor-visualizacao" aria-label="Visualização dos projetos">
@@ -467,7 +495,7 @@ function renderProjetoKanbanCard(projeto) {
             </div>
             <dl>
                 <div><dt>Previsto</dt><dd>${formatMoeda(valorPrevisto)}</dd></div>
-                <div><dt>Próxima</dt><dd>${proxima ? formatData(proxima.data_prevista, proxima.data_exata) : "Sem agenda"}</dd></div>
+                <div><dt>Próxima</dt><dd>${proxima ? formatPeriodo(proxima) : "Sem agenda"}</dd></div>
             </dl>
             <footer>
                 <span>${abertas.length} aberta(s)</span>
@@ -552,10 +580,12 @@ function renderProjetoCard(projeto) {
                 <span><strong>${intervencoes.length}</strong> intervenções</span>
                 <span><strong>${abertas.length}</strong> abertas</span>
                 <span><strong>${formatMoeda(valorPrevisto)}</strong> previsto</span>
-                <span><strong>${proxima ? formatData(proxima.data_prevista, proxima.data_exata) : "Sem agenda"}</strong> próxima</span>
+                <span><strong>${proxima ? formatPeriodo(proxima) : "Sem agenda"}</strong> próxima</span>
             </div>
             <div class="card-acoes">
-                <small>Atualizado em ${escapeHtml(formatData((projeto.atualizado_em || "").slice(0, 10)))}</small>
+                <small>${projeto.arquivado_em
+                    ? `Arquivado em ${escapeHtml(formatDataHora(projeto.arquivado_em))} por ${escapeHtml(projeto.arquivado_por || "sistema")}`
+                    : `Atualizado em ${escapeHtml(formatData((projeto.atualizado_em || "").slice(0, 10)))}`}</small>
                 <button class="abrir-projeto-modal" type="button" data-id="${projeto.id}">Abrir detalhes</button>
             </div>
         </article>
@@ -563,7 +593,7 @@ function renderProjetoCard(projeto) {
 }
 
 function abrirProjetoModal(id, intervencaoId = null) {
-    const projeto = cache.projetos.find((item) => item.id === id);
+    const projeto = buscarProjeto(id);
     const modal = $("#projetoModal");
     const modalConteudo = $("#projetoModalConteudo");
     if (!projeto || !modal || !modalConteudo) return;
@@ -606,14 +636,16 @@ function bindProjetoDetalhe(container) {
     container.querySelectorAll(".proposta-form").forEach((form) => form.addEventListener("submit", salvarProposta));
     container.querySelectorAll(".novo-proposta-item-form").forEach((form) => form.addEventListener("submit", criarPropostaItem));
     container.querySelectorAll(".novo-projeto-link-form").forEach((form) => form.addEventListener("submit", criarProjetoLink));
-    const formExcluir = container.querySelector(".excluir-projeto-form");
-    if (formExcluir) {
-        const projeto = cache.projetos.find((item) => item.id === Number(formExcluir.dataset.id));
-        formExcluir.confirmacao.addEventListener("input", () => {
-            formExcluir.querySelector("button").disabled = formExcluir.confirmacao.value.trim() !== projeto?.nome?.trim();
+    const formArquivar = container.querySelector(".arquivar-projeto-form");
+    if (formArquivar) {
+        const projeto = cache.projetos.find((item) => item.id === Number(formArquivar.dataset.id));
+        formArquivar.confirmacao.addEventListener("input", () => {
+            formArquivar.querySelector("button").disabled = formArquivar.confirmacao.value.trim() !== projeto?.nome?.trim();
         });
-        formExcluir.addEventListener("submit", excluirProjeto);
+        formArquivar.addEventListener("submit", arquivarProjeto);
     }
+    container.querySelector(".restaurar-projeto-form")?.addEventListener("submit", restaurarProjeto);
+    container.querySelectorAll("[data-excluir]").forEach((botao) => botao.addEventListener("click", excluirRegistro));
 }
 
 function renderProjetoDetalhe(projeto) {
@@ -669,7 +701,8 @@ function renderProjetoDetalhe(projeto) {
                 <form class="nova-intervencao-form form-grid compacto-grid" data-projeto-id="${projeto.id}">
                     <label>Tipo<select name="tipo"><option value="manutencao">Manutenção</option><option value="plantio">Plantio inicial</option></select></label>
                     <label>Título<input name="titulo" placeholder="Ex.: Manutenção 01" required></label>
-                    <label>Mês/data<input name="data_prevista" type="date"></label>
+                    <label>Início<input name="data_prevista" type="date"></label>
+                    <label>Fim (opcional)<input name="data_fim" type="date"></label>
                     <label class="checkbox linha-checkbox"><input type="checkbox" name="data_exata" value="1" checked> Data exata</label>
                     <label>Valor a receber<input name="valor_receber" type="number" step="0.01" min="0" placeholder="0,00"></label>
                     <button type="submit">Adicionar</button>
@@ -691,16 +724,24 @@ function renderProjetoDetalhe(projeto) {
                     ${historico.length ? historico.map(renderHistoricoItem).join("") : `<p class="vazio compacto">Nenhum evento registrado ainda.</p>`}
                 </div>
             </section>
-            <section class="excluir-projeto">
-                <h3>Excluir projeto</h3>
-                <p class="subtexto">Remove o projeto junto com plantio, manutenções, lançamentos, propostas, links e histórico. Esta ação não pode ser desfeita.</p>
-                <form class="excluir-projeto-form" data-id="${projeto.id}">
+            ${projeto.arquivado_em ? `
+            <section class="arquivar-projeto">
+                <h3>Projeto arquivado</h3>
+                <p class="subtexto">Arquivado em ${escapeHtml(formatDataHora(projeto.arquivado_em))} por ${escapeHtml(projeto.arquivado_por || "sistema")}. Os dados continuam guardados e o projeto pode voltar para as listas.</p>
+                <form class="restaurar-projeto-form" data-id="${projeto.id}">
+                    <button type="submit">Restaurar projeto</button>
+                </form>
+            </section>` : `
+            <section class="arquivar-projeto">
+                <h3>Arquivar projeto</h3>
+                <p class="subtexto">O projeto sai das listas, da agenda e dos alertas, mas plantio, manutenções, propostas, links e histórico continuam guardados. Ele pode ser restaurado pelo filtro "Arquivados".</p>
+                <form class="arquivar-projeto-form" data-id="${projeto.id}">
                     <label>Para confirmar, digite o nome do projeto: <strong>${escapeHtml(projeto.nome)}</strong>
                         <input name="confirmacao" autocomplete="off" spellcheck="false">
                     </label>
-                    <button class="perigo" type="submit" disabled>Excluir projeto</button>
+                    <button class="perigo" type="submit" disabled>Arquivar projeto</button>
                 </form>
-            </section>
+            </section>`}
         </article>
     `;
 }
@@ -711,10 +752,9 @@ function renderIntervencaoCard(intervencao) {
     const lancamentos = cache.lancamentos.filter((item) => item.intervencao_id === intervencao.id);
     const insumosUsados = cache.insumosUsados.filter((item) => item.intervencao_id === intervencao.id);
     const gastos = lancamentos.filter((item) => item.tipo === "gasto").reduce((total, item) => total + Number(item.valor || 0), 0);
-    const recebimentos = lancamentos.filter((item) => item.tipo === "recebimento").reduce((total, item) => total + Number(item.valor || 0), 0);
     const rateios = insumosUsados.reduce((total, item) => total + Number(item.valor_rateado || 0), 0);
     const previsto = Number(intervencao.valor_receber || 0);
-    const saldoPrevisto = previsto + recebimentos - gastos - rateios;
+    const saldoPrevisto = previsto - gastos - rateios;
 
     return `
         <article class="intervencao-card tipo-${escapeHtml(intervencao.tipo)} ${intervencao.id === intervencaoModalDestaqueId ? "intervencao-destaque" : ""}" data-intervencao-card="${intervencao.id}">
@@ -723,7 +763,7 @@ function renderIntervencaoCard(intervencao) {
                     <div class="intervencao-resumo">
                         <strong>${escapeHtml(intervencao.tipo === "plantio" ? "Plantio" : "Manutenção")}</strong>
                         <span>${escapeHtml(intervencao.titulo || "Sem título")}</span>
-                        <small>${escapeHtml(formatData(intervencao.data_prevista, intervencao.data_exata))} · ${escapeHtml(formatStatus(intervencao.status))}</small>
+                        <small>${escapeHtml(formatPeriodo(intervencao))} · ${escapeHtml(formatStatus(intervencao.status))}</small>
                     </div>
                     <span class="saldo ${saldoPrevisto >= 0 ? "positivo" : "negativo"}">${formatMoeda(saldoPrevisto)}</span>
                 </summary>
@@ -732,13 +772,16 @@ function renderIntervencaoCard(intervencao) {
                 <div class="form-grid compacto-grid">
                     <label>Título<input name="titulo" value="${escapeHtml(intervencao.titulo)}" required></label>
                     <label>Status<select name="status">${opcoesSelect(INTERVENCAO_STATUS, intervencao.status)}</select></label>
-                    <label>Data<input name="data_prevista" type="date" value="${escapeHtml(intervencao.data_prevista || "")}"></label>
+                    <label>Início<input name="data_prevista" type="date" value="${escapeHtml(intervencao.data_prevista || "")}"></label>
+                    <label>Fim (opcional)<input name="data_fim" type="date" value="${escapeHtml(intervencao.data_fim || "")}"></label>
                     <label class="checkbox linha-checkbox"><input type="checkbox" name="data_exata" value="1" ${intervencao.data_exata ? "checked" : ""}> Data exata</label>
                     <label>Valor a receber<input name="valor_receber" type="number" step="0.01" min="0" value="${escapeHtml(intervencao.valor_receber || 0)}"></label>
-                    <label>Contato cliente<input name="contato_cliente_em" type="date" value="${escapeHtml(intervencao.contato_cliente_em || "")}"></label>
+                    <label>Recebido em<input name="recebido_em" type="date" value="${escapeHtml(intervencao.recebido_em || "")}"></label>
+                    <label>Data para contatar<input name="contato_cliente_em" type="date" value="${escapeHtml(intervencao.contato_cliente_em || "")}"></label>
+                    <label class="checkbox linha-checkbox"><input type="checkbox" name="contato_feito" value="1" ${intervencao.contato_feito ? "checked" : ""}> Contato feito</label>
                     <label class="campo-largo">Observações<textarea name="observacoes">${escapeHtml(intervencao.observacoes || "")}</textarea></label>
                 </div>
-                <div class="card-acoes"><span>Receber ${formatMoeda(previsto)} | Gastos ${formatMoeda(gastos + rateios)}</span><button type="submit">Salvar intervenção</button></div>
+                <div class="card-acoes"><span>${intervencao.recebido_em ? `Recebido ${formatMoeda(previsto)} em ${escapeHtml(formatData(intervencao.recebido_em))}` : `A receber ${formatMoeda(previsto)}`} | Gastos ${formatMoeda(gastos + rateios)}</span><div class="acoes-intervencao"><button class="secundario botao-excluir-texto" type="button" data-excluir="intervencoes" data-id="${intervencao.id}" data-descricao="${escapeHtml(intervencao.titulo || (intervencao.tipo === "plantio" ? "Plantio" : "Manutenção"))}">Excluir</button><button type="submit">Salvar intervenção</button></div></div>
             </form>
             <div class="subgrid">
                 <section>
@@ -753,13 +796,12 @@ function renderIntervencaoCard(intervencao) {
                     </form>
                 </section>
                 <section>
-                    <h4>Gastos e recebimentos</h4>
+                    <h4>Gastos</h4>
                     <div class="lista-mini">
-                        ${lancamentos.length ? lancamentos.map((l) => `<span>${escapeHtml(formatStatus(l.categoria))}: ${formatMoeda(l.valor)} - ${escapeHtml(l.descricao)}</span>`).join("") : `<span class="vazio compacto">Sem lançamentos.</span>`}
-                        ${insumosUsados.length ? insumosUsados.map((i) => `<span>Insumo rateado: ${escapeHtml(i.nome)} ${escapeHtml(i.quantidade_usada)} ${escapeHtml(i.unidade)} = ${formatMoeda(i.valor_rateado)}</span>`).join("") : ""}
+                        ${lancamentos.length ? lancamentos.map((l) => `<div class="linha-excluivel"><span>${escapeHtml(formatStatus(l.categoria))}: ${formatMoeda(l.valor)} - ${escapeHtml(l.descricao)}</span>${botaoExcluirMini("intervencao_lancamentos", l.id, `${formatStatus(l.categoria)}: ${formatMoeda(l.valor)} - ${l.descricao}`)}</div>`).join("") : `<span class="vazio compacto">Sem gastos lançados.</span>`}
+                        ${insumosUsados.length ? insumosUsados.map((i) => `<div class="linha-excluivel"><span>Insumo rateado: ${escapeHtml(i.nome)} ${escapeHtml(i.quantidade_usada)} ${escapeHtml(i.unidade)} = ${formatMoeda(i.valor_rateado)}</span>${botaoExcluirMini("intervencao_insumos", i.id, `${i.nome} = ${formatMoeda(i.valor_rateado)}`)}</div>`).join("") : ""}
                     </div>
                     <form class="novo-lancamento-form mini-form" data-intervencao-id="${intervencao.id}">
-                        <select name="tipo"><option value="gasto">Gasto</option><option value="recebimento">Recebimento</option></select>
                         <select name="categoria">${opcoesSelect(opcoesConfig("categoria_lancamento", CATEGORIAS_LANCAMENTO).filter(([valor]) => valor !== "recebimento"), "combustivel")}</select>
                         <input name="descricao" placeholder="Descrição" required>
                         <input name="valor" type="number" step="0.01" min="0" placeholder="Valor" required>
@@ -866,11 +908,82 @@ function renderProjetoLink(link) {
 
 function renderAtividade(atividade) {
     return `
-        <label class="chip-check">
-            <input class="atividade-check" type="checkbox" data-id="${atividade.id}" ${atividade.concluida ? "checked" : ""}>
-            <span>${escapeHtml(formatStatus(atividade.atividade))}${Number(atividade.valor_previsto || 0) ? ` - ${formatMoeda(atividade.valor_previsto)}` : ""}</span>
-        </label>
+        <div class="linha-excluivel">
+            <label class="chip-check">
+                <input class="atividade-check" type="checkbox" data-id="${atividade.id}" ${atividade.concluida ? "checked" : ""}>
+                <span>${escapeHtml(formatStatus(atividade.atividade))}${Number(atividade.valor_previsto || 0) ? ` - ${formatMoeda(atividade.valor_previsto)}` : ""}</span>
+            </label>
+            ${botaoExcluirMini("intervencao_atividades", atividade.id, formatStatus(atividade.atividade))}
+        </div>
     `;
+}
+
+function botaoExcluirMini(tabela, id, descricao) {
+    return `<button class="botao-excluir-mini" type="button" data-excluir="${tabela}" data-id="${id}" data-descricao="${escapeHtml(descricao)}" title="Excluir" aria-label="Excluir ${escapeHtml(descricao)}">×</button>`;
+}
+
+const CONFIRMACOES_EXCLUSAO = {
+    intervencoes: (descricao) => `Excluir "${descricao}"?\n\nAs atividades, os gastos e os insumos rateados desta intervenção também serão apagados.`,
+    intervencao_atividades: (descricao) => `Excluir a atividade "${descricao}"?`,
+    intervencao_lancamentos: (descricao) => `Excluir o gasto "${descricao}"?`,
+    intervencao_insumos: (descricao) => `Excluir o insumo rateado "${descricao}"?`,
+};
+
+const PALAVRA_EXCLUSAO = "EXCLUIR";
+
+// Modal de confirmacao reutilizavel: so libera a exclusao ao digitar EXCLUIR.
+function confirmarExclusao(mensagem) {
+    let modal = $("#confirmarExclusaoModal");
+    if (!modal) {
+        modal = document.createElement("dialog");
+        modal.id = "confirmarExclusaoModal";
+        modal.className = "modal-confirmar-exclusao";
+        modal.innerHTML = `
+            <form method="dialog">
+                <h2>Confirmar exclusão</h2>
+                <p class="confirmar-exclusao-mensagem"></p>
+                <label>Para confirmar, digite <strong>${PALAVRA_EXCLUSAO}</strong>
+                    <input name="confirmacao" autocomplete="off" spellcheck="false" placeholder="${PALAVRA_EXCLUSAO}">
+                </label>
+                <div class="card-acoes">
+                    <button class="secundario" type="button" value="cancelar">Cancelar</button>
+                    <button class="perigo" type="submit" value="excluir" disabled>Excluir</button>
+                </div>
+            </form>
+        `;
+        document.body.append(modal);
+        const form = modal.querySelector("form");
+        form.confirmacao.addEventListener("input", () => {
+            form.querySelector('[value="excluir"]').disabled = form.confirmacao.value.trim() !== PALAVRA_EXCLUSAO;
+        });
+        form.querySelector('[value="cancelar"]').addEventListener("click", () => modal.close("cancelar"));
+    }
+    const form = modal.querySelector("form");
+    modal.querySelector(".confirmar-exclusao-mensagem").textContent = `${mensagem}\n\nEsta ação não pode ser desfeita.`;
+    form.reset();
+    form.querySelector('[value="excluir"]').disabled = true;
+    modal.returnValue = "";
+    modal.showModal();
+    form.confirmacao.focus();
+    return new Promise((resolve) => {
+        modal.addEventListener("close", () => {
+            resolve(modal.returnValue === "excluir" && form.confirmacao.value.trim() === PALAVRA_EXCLUSAO);
+        }, { once: true });
+    });
+}
+
+async function excluirRegistro(event) {
+    const botao = event.currentTarget;
+    const tabela = botao.dataset.excluir;
+    const id = Number(botao.dataset.id);
+    const confirmacao = CONFIRMACOES_EXCLUSAO[tabela];
+    if (!confirmacao || !(await confirmarExclusao(confirmacao(botao.dataset.descricao)))) return;
+    const { data, error } = await supabase.from(tabela).delete().eq("id", id).select("id");
+    if (error) return setMensagem(error.message, "erro");
+    if (!data?.length) return setMensagem("Nada foi excluído. Verifique sua permissão.", "erro");
+    if (tabela === "intervencoes" && intervencaoModalDestaqueId === id) intervencaoModalDestaqueId = null;
+    await render();
+    setMensagem("Excluído.");
 }
 
 async function criarProjeto(event) {
@@ -894,19 +1007,32 @@ async function salvarProjeto(event) {
     await render();
 }
 
-async function excluirProjeto(event) {
+async function arquivarProjeto(event) {
     event.preventDefault();
     const id = Number(event.target.dataset.id);
     const projeto = cache.projetos.find((item) => item.id === id);
     if (!projeto || event.target.confirmacao.value.trim() !== projeto.nome.trim()) {
         return setMensagem("Digite o nome do projeto exatamente como aparece para confirmar.", "erro");
     }
-    const { data, error } = await supabase.from("projetos").delete().eq("id", id).select("id");
+    // arquivado_em e arquivado_por sao definidos pelo banco (trigger set_projeto_arquivamento).
+    const { data, error } = await supabase.from("projetos").update({ arquivado_em: new Date().toISOString() }).eq("id", id).select("id");
     if (error) return setMensagem(error.message, "erro");
-    if (!data?.length) return setMensagem("O projeto não foi excluído. Verifique sua permissão.", "erro");
+    if (!data?.length) return setMensagem("O projeto não foi arquivado. Verifique sua permissão.", "erro");
     fecharProjetoModal();
     await render();
-    setMensagem(`Projeto "${projeto.nome}" excluído.`);
+    setMensagem(`Projeto "${projeto.nome}" arquivado. Ele pode ser restaurado pelo filtro "Arquivados".`);
+}
+
+async function restaurarProjeto(event) {
+    event.preventDefault();
+    const id = Number(event.target.dataset.id);
+    const projeto = buscarProjeto(id);
+    const { data, error } = await supabase.from("projetos").update({ arquivado_em: null }).eq("id", id).select("id");
+    if (error) return setMensagem(error.message, "erro");
+    if (!data?.length) return setMensagem("O projeto não foi restaurado. Verifique sua permissão.", "erro");
+    fecharProjetoModal();
+    await render();
+    setMensagem(`Projeto "${projeto?.nome || ""}" restaurado.`);
 }
 
 function normalizarProjeto(dados) {
@@ -932,6 +1058,12 @@ function filtrarProjetos(event) {
     location.hash = `projetos?${params.toString()}`;
 }
 
+function validarPeriodo(payload) {
+    if (payload.data_fim && !payload.data_prevista) return "Informe a data de início antes da data de fim.";
+    if (payload.data_fim && payload.data_fim < payload.data_prevista) return "A data de fim não pode ser anterior à data de início.";
+    return "";
+}
+
 async function criarIntervencao(event) {
     event.preventDefault();
     const dados = Object.fromEntries(new FormData(event.target).entries());
@@ -941,9 +1073,12 @@ async function criarIntervencao(event) {
         titulo: dados.titulo,
         status: "prevista",
         data_prevista: dados.data_prevista || null,
+        data_fim: dados.data_fim || null,
         data_exata: Boolean(dados.data_exata),
         valor_receber: Number(dados.valor_receber || 0),
     };
+    const erroPeriodo = validarPeriodo(payload);
+    if (erroPeriodo) return setMensagem(erroPeriodo, "erro");
     const { error } = await supabase.from("intervencoes").insert(payload);
     if (error) return setMensagem(error.message, "erro");
     setMensagem("Intervencao criada.");
@@ -957,11 +1092,16 @@ async function salvarIntervencao(event) {
         titulo: dados.titulo,
         status: dados.status || "prevista",
         data_prevista: dados.data_prevista || null,
+        data_fim: dados.data_fim || null,
         data_exata: Boolean(dados.data_exata),
         valor_receber: Number(dados.valor_receber || 0),
+        recebido_em: dados.recebido_em || null,
         contato_cliente_em: dados.contato_cliente_em || null,
+        contato_feito: Boolean(dados.contato_feito),
         observacoes: dados.observacoes || null,
     };
+    const erroPeriodo = validarPeriodo(payload);
+    if (erroPeriodo) return setMensagem(erroPeriodo, "erro");
     const { error } = await supabase.from("intervencoes").update(payload).eq("id", event.target.dataset.id);
     if (error) return setMensagem(error.message, "erro");
     setMensagem("Intervencao salva.");
@@ -998,8 +1138,8 @@ async function criarLancamento(event) {
     const categoriasGasto = opcoesConfig("categoria_lancamento", CATEGORIAS_LANCAMENTO).filter(([valor]) => valor !== "recebimento");
     const payload = {
         intervencao_id: Number(event.target.dataset.intervencaoId),
-        tipo: dados.tipo || "gasto",
-        categoria: dados.tipo === "recebimento" ? "recebimento" : (dados.categoria || categoriasGasto[0]?.[0] || "combustivel"),
+        tipo: "gasto",
+        categoria: dados.categoria || categoriasGasto[0]?.[0] || "combustivel",
         descricao: dados.descricao,
         valor: Number(dados.valor || 0),
         data_lancamento: new Date().toISOString().slice(0, 10),
@@ -1108,10 +1248,20 @@ function renderCalendario() {
     const fim = new Date(`${inicio}T12:00:00`);
     fim.setMonth(fim.getMonth() + 1);
     const fimIso = fim.toISOString().slice(0, 10);
-    const itens = cache.intervencoes
-        .filter((item) => item.data_prevista && item.data_prevista >= inicio && item.data_prevista < fimIso)
-        .sort((a, b) => String(a.data_prevista).localeCompare(String(b.data_prevista)));
-    const dias = montarDiasCalendario(mes, itens);
+    const eventos = eventosCalendario()
+        .filter((evento) => evento.data >= inicio && evento.data < fimIso)
+        .sort((a, b) => a.data.localeCompare(b.data) || (a.tipo === "contato" ? -1 : 1));
+    // Na lista do mes, cada intervencao de varios dias aparece uma vez so.
+    const vistos = new Set();
+    const eventosLista = eventos.filter((evento) => {
+        const chave = `${evento.tipo}-${evento.item.id}`;
+        if (vistos.has(chave)) return false;
+        vistos.add(chave);
+        return true;
+    });
+    const totalExecucoes = eventosLista.filter((evento) => evento.tipo === "execucao").length;
+    const totalContatos = eventosLista.length - totalExecucoes;
+    const dias = montarDiasCalendario(mes, eventos);
 
     setPage("Calendário", "Agenda de plantios e manutenções", `<a class="botao secundario" href="#projetos">Projetos</a>`);
     conteudo.innerHTML = `
@@ -1120,13 +1270,19 @@ function renderCalendario() {
             <button type="submit">Ver agenda</button>
         </form>
         <section class="painel">
-            <div class="painel-topo"><h2>Agenda de ${escapeHtml(mes)}</h2><span>${itens.length} intervenção(ões)</span></div>
+            <div class="painel-topo"><h2>Agenda de ${escapeHtml(mes)}</h2><span>${totalExecucoes} intervenção(ões) · ${totalContatos} contato(s)</span></div>
+            <div class="calendario-legenda">
+                <span class="legenda-execucao">Plantio / manutenção</span>
+                <span class="legenda-contato">Contatar cliente</span>
+                <span class="legenda-contato-atrasado">Contato atrasado</span>
+                <span class="legenda-contato-feito">Contato feito</span>
+            </div>
             <div class="calendario-grade">
                 ${["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"].map((dia) => `<strong class="calendario-semana">${dia}</strong>`).join("")}
                 ${dias.map(renderDiaCalendario).join("")}
             </div>
             <div class="agenda-lista">
-                ${itens.length ? itens.map(renderAgendaItem).join("") : `<p class="vazio">Nenhum plantio ou manutenção previsto para este mês.</p>`}
+                ${eventosLista.length ? eventosLista.map(renderAgendaItem).join("") : `<p class="vazio">Nenhum plantio, manutenção ou contato previsto para este mês.</p>`}
             </div>
         </section>
         <dialog id="projetoModal" class="modal-projeto">
@@ -1360,16 +1516,63 @@ async function atualizarPerfilSenha(event) {
     event.target.reset();
 }
 
-function renderAgendaItem(item) {
+function dataIsoLocal(data) {
+    return `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, "0")}-${String(data.getDate()).padStart(2, "0")}`;
+}
+
+function subtrairDias(dataIso, dias) {
+    const data = new Date(`${dataIso}T12:00:00`);
+    data.setDate(data.getDate() - dias);
+    return dataIsoLocal(data);
+}
+
+// Cada intervencao gera o evento de execucao; manutencoes abertas geram tambem o
+// evento de contato com o cliente (ver contatoManutencao).
+function eventosCalendario() {
+    const hoje = dataIsoLocal(new Date());
+    const eventos = [];
+    for (const item of intervencoesProjetosAtivos()) {
+        if (item.data_prevista) {
+            // Servicos de varios dias aparecem em cada dia do periodo (limite de 90 dias).
+            const ultimo = item.data_exata && item.data_fim > item.data_prevista ? item.data_fim : item.data_prevista;
+            const dias = [];
+            for (let data = item.data_prevista; data <= ultimo && dias.length < 90; data = subtrairDias(data, -1)) dias.push(data);
+            dias.forEach((data, indice) => eventos.push({ tipo: "execucao", data, item, dia: indice + 1, totalDias: dias.length }));
+        }
+        const contato = contatoManutencao(item, hoje);
+        if (contato) eventos.push({ tipo: "contato", ...contato, item });
+    }
+    return eventos;
+}
+
+function rotuloEvento(evento) {
+    if (evento.tipo === "execucao") {
+        return evento.totalDias > 1 ? `${evento.item.titulo} (dia ${evento.dia}/${evento.totalDias})` : evento.item.titulo;
+    }
+    if (evento.situacao === "feito") return `Contato feito: ${evento.item.titulo}`;
+    if (evento.situacao === "atrasado") return `Contato atrasado: ${evento.item.titulo}`;
+    return `Contatar cliente: ${evento.item.titulo}`;
+}
+
+function classeEvento(evento) {
+    return evento.tipo === "execucao" ? "evento-execucao" : `evento-contato contato-${evento.situacao}`;
+}
+
+function renderAgendaItem(evento) {
+    const item = evento.item;
     const projeto = item.projetos || {};
+    const data = evento.tipo === "execucao" ? formatPeriodo(item) : formatData(evento.data);
+    const situacao = evento.tipo === "execucao"
+        ? formatStatus(item.status)
+        : `Manutenção em ${formatPeriodo(item)}`;
     return `
-        <article class="agenda-item">
-            <time>${escapeHtml(formatData(item.data_prevista, item.data_exata))}</time>
+        <article class="agenda-item ${classeEvento(evento)}">
+            <time>${escapeHtml(data)}</time>
             <div>
-                <strong>${escapeHtml(item.titulo)}</strong>
+                <strong>${escapeHtml(evento.tipo === "execucao" ? item.titulo : rotuloEvento(evento))}</strong>
                 <span>${escapeHtml(projeto.nome || "Projeto")} - ${escapeHtml(projeto.cliente || "Cliente não informado")}</span>
             </div>
-            <em>${escapeHtml(formatStatus(item.status))}</em>
+            <em>${escapeHtml(situacao)}</em>
             <button class="botao secundario abrir-intervencao" type="button" data-projeto-id="${item.projeto_id}" data-intervencao-id="${item.id}">Abrir</button>
         </article>
     `;
@@ -1385,7 +1588,7 @@ function montarDiasCalendario(mes, itens) {
     for (let i = 0; i < offset; i += 1) dias.push({ vazio: true });
     for (let dia = 1; dia <= totalDias; dia += 1) {
         const data = `${ano}-${String(mesNumero).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
-        dias.push({ data, dia, itens: itens.filter((item) => item.data_prevista === data) });
+        dias.push({ data, dia, itens: itens.filter((evento) => evento.data === data) });
     }
     while (dias.length % 7 !== 0) dias.push({ vazio: true });
     return dias;
@@ -1403,11 +1606,12 @@ function renderDiaCalendario(dia) {
     `;
 }
 
-function renderEventoCalendario(item) {
+function renderEventoCalendario(evento) {
+    const item = evento.item;
     const projeto = item.projetos || {};
     return `
-        <button class="evento-calendario abrir-intervencao" type="button" data-projeto-id="${item.projeto_id}" data-intervencao-id="${item.id}">
-            <strong>${escapeHtml(item.titulo)}</strong>
+        <button class="evento-calendario abrir-intervencao ${classeEvento(evento)}" type="button" data-projeto-id="${item.projeto_id}" data-intervencao-id="${item.id}">
+            <strong>${escapeHtml(rotuloEvento(evento))}</strong>
             <span>${escapeHtml(projeto.nome || "Projeto")}</span>
         </button>
     `;
@@ -1450,10 +1654,13 @@ function formatCampoHistorico(campo) {
         descricao: "Descrição",
         observacoes: "Observações",
         titulo: "Título",
-        data_prevista: "Data prevista",
+        data_prevista: "Data de início",
+        data_fim: "Data de fim",
         data_exata: "Data exata",
         valor_receber: "Valor a receber",
-        contato_cliente_em: "Contato cliente",
+        recebido_em: "Recebido em",
+        contato_cliente_em: "Data para contatar",
+        contato_feito: "Contato feito",
         concluida: "Concluída",
         atividade: "Atividade",
         categoria: "Categoria",
@@ -1534,7 +1741,7 @@ function renderConfiguracaoAlertas() {
     const confirmacao = configuracaoAlerta("confirmacao_manutencao") || { ativo: true, dias_antecedencia: 7 };
     return `
         <section class="painel configuracao-alertas">
-            <div class="painel-topo"><div><h2>Alertas operacionais</h2><p class="subtexto">Avisos exibidos no painel para confirmar manutenções com o cliente.</p></div></div>
+            <div class="painel-topo"><div><h2>Alertas operacionais</h2><p class="subtexto">Aviso no painel inicial quando chega a data de contatar o cliente antes de uma manutenção. A antecedência abaixo é usada só nas manutenções sem "Data para contatar".</p></div></div>
             <form id="configuracaoAlertasForm" class="mini-form configuracao-alertas-form">
                 <label class="checkbox linha-checkbox"><input name="ativo" type="checkbox" ${confirmacao.ativo ? "checked" : ""}> Ativar alerta de confirmação</label>
                 <label>Dias de antecedência<input name="dias_antecedencia" type="number" min="0" max="90" value="${escapeHtml(confirmacao.dias_antecedencia)}" required></label>

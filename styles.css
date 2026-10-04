@@ -794,19 +794,20 @@ button.secundario {
     padding: 1.1rem;
 }
 
-.excluir-projeto {
+.arquivar-projeto {
     background: var(--vermelho-claro);
     border: 1px solid var(--vermelho);
     border-radius: 8px;
     padding: 1.1rem;
 }
 
-.excluir-projeto h3 {
+.arquivar-projeto h3 {
     color: var(--vermelho);
     margin: 0 0 0.3rem;
 }
 
-.excluir-projeto-form {
+.arquivar-projeto-form,
+.restaurar-projeto-form {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
@@ -814,7 +815,7 @@ button.secundario {
     margin-top: 0.75rem;
 }
 
-.excluir-projeto-form label {
+.arquivar-projeto-form label {
     flex: 1 1 18rem;
 }
 
@@ -1329,6 +1330,75 @@ button.perigo:disabled {
     color: var(--texto);
 }
 
+.linha-excluivel {
+    display: flex;
+    align-items: stretch;
+    gap: 0.35rem;
+}
+
+.linha-excluivel > .chip-check,
+.linha-excluivel > span {
+    flex: 1;
+    min-width: 0;
+}
+
+.botao-excluir-mini {
+    min-height: auto;
+    padding: 0 0.55rem;
+    background: transparent;
+    border: 1px solid #edf0f2;
+    color: var(--muted);
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.botao-excluir-mini:hover,
+.botao-excluir-mini:focus-visible {
+    background: var(--vermelho-claro);
+    border-color: var(--vermelho);
+    color: var(--vermelho);
+}
+
+.modal-confirmar-exclusao {
+    width: min(440px, calc(100vw - 32px));
+    border: 1px solid var(--vermelho);
+    border-radius: 8px;
+    padding: 1.2rem;
+}
+
+.modal-confirmar-exclusao::backdrop {
+    background: rgba(15, 23, 20, 0.45);
+}
+
+.modal-confirmar-exclusao h2 {
+    margin: 0 0 0.5rem;
+    color: var(--vermelho);
+}
+
+.confirmar-exclusao-mensagem {
+    white-space: pre-line;
+    margin: 0 0 1rem;
+}
+
+.modal-confirmar-exclusao label {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.modal-confirmar-exclusao .card-acoes {
+    justify-content: flex-end;
+    margin-top: 1rem;
+}
+
+.acoes-intervencao {
+    display: flex;
+    gap: 0.5rem;
+}
+
+button.botao-excluir-texto {
+    color: var(--vermelho);
+}
+
 .lista-mini span {
     display: block;
     border: 1px solid #edf0f2;
@@ -1485,6 +1555,58 @@ button.perigo:disabled {
     justify-content: stretch;
     border: 1px solid #c8e2d0;
 }
+
+.evento-calendario.contato-pendente {
+    background: #e9f1fa;
+    border-color: #b9d0ea;
+    color: var(--azul);
+}
+
+.evento-calendario.contato-atrasado {
+    background: #fff4e0;
+    border-color: #ecc98a;
+    color: #8a5a12;
+}
+
+.evento-calendario.contato-feito {
+    background: #f2f4f7;
+    border-color: var(--linha);
+    color: var(--muted);
+}
+
+.evento-calendario.evento-contato span {
+    color: inherit;
+    opacity: 0.85;
+}
+
+.agenda-item.contato-pendente time { color: var(--azul); }
+.agenda-item.contato-atrasado time { color: #8a5a12; }
+.agenda-item.contato-feito time { color: var(--muted); }
+
+.calendario-legenda {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+    margin: 0 0 0.75rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+.calendario-legenda span::before {
+    content: "";
+    display: inline-block;
+    width: 0.75rem;
+    height: 0.75rem;
+    margin-right: 0.35rem;
+    border-radius: 3px;
+    vertical-align: -0.1rem;
+    border: 1px solid;
+}
+
+.legenda-execucao::before { background: #edf7f0; border-color: #c8e2d0; }
+.legenda-contato::before { background: #e9f1fa; border-color: #b9d0ea; }
+.legenda-contato-atrasado::before { background: #fff4e0; border-color: #ecc98a; }
+.legenda-contato-feito::before { background: #f2f4f7; border-color: var(--linha); }
 
 .evento-calendario strong,
 .evento-calendario span {
