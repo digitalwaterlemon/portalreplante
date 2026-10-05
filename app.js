@@ -43,21 +43,6 @@ const ATIVIDADES_MANUTENCAO = [
     ["controle_formigas", "Controle de formigas"],
     ["replantio", "Replantio"],
 ];
-const CATEGORIAS_LANCAMENTO = [
-    ["recebimento", "Recebimento"],
-    ["combustivel", "Combustível"],
-    ["insumo", "Insumo"],
-    ["diaria", "Diária"],
-    ["equipamento", "Equipamento"],
-];
-const UNIDADES_INSUMO = [
-    ["kg", "kg"],
-    ["g", "g"],
-    ["l", "L"],
-    ["ml", "ml"],
-    ["un", "unidade"],
-    ["muda", "muda"],
-];
 const PROPOSTA_STATUS = [
     ["rascunho", "Rascunho"],
     ["enviada", "Enviada"],
@@ -104,9 +89,6 @@ let cache = {
     regras: [],
     intervencoes: [],
     atividades: [],
-    lancamentos: [],
-    insumosUsados: [],
-    insumos: [],
     opcoes: [],
     historico: [],
     propostas: [],
@@ -114,6 +96,10 @@ let cache = {
     projetoLinks: [],
     prospeccaoContatos: [],
     configuracoesAlertas: [],
+    financeiroContas: [],
+    financeiroCategorias: [],
+    financeiroImportacoes: [],
+    lancamentosProjetos: [],
 };
 let projetoModalAbertoId = null;
 let intervencaoModalDestaqueId = null;
@@ -276,16 +262,13 @@ function opcoesTexto(opcoes, atual) {
 }
 
 async function carregarDados() {
-    const [fontes, oportunidades, projetos, regras, intervencoes, atividades, lancamentos, insumosUsados, insumos, opcoes, historico, propostas, propostaItens, projetoLinks, prospeccaoContatos, configuracoesAlertas, financeiroContas, financeiroCategorias, financeiroImportacoes] = await Promise.all([
+    const [fontes, oportunidades, projetos, regras, intervencoes, atividades, opcoes, historico, propostas, propostaItens, projetoLinks, prospeccaoContatos, configuracoesAlertas, financeiroContas, financeiroCategorias, financeiroImportacoes] = await Promise.all([
         supabase.from("fontes").select("*").order("nome"),
         supabase.from("oportunidades").select("*, fontes(nome)").order("data_encontrado", { ascending: false }),
         supabase.from("projetos").select("*").order("atualizado_em", { ascending: false }),
         supabase.from("regras_prad").select("*").order("ordem").order("id"),
         supabase.from("intervencoes").select("*, projetos(nome, cliente, local)").order("data_prevista", { ascending: true }),
         supabase.from("intervencao_atividades").select("*").order("id"),
-        supabase.from("intervencao_lancamentos").select("*").order("data_lancamento", { ascending: false }),
-        supabase.from("intervencao_insumos").select("*").order("id"),
-        supabase.from("insumos").select("*").order("nome"),
         supabase.from("configuracoes_opcoes").select("*").order("tipo").order("ordem").order("rotulo"),
         supabase.from("projeto_historico").select("*").order("criado_em", { ascending: false }).limit(300),
         supabase.from("propostas").select("*").order("versao", { ascending: false }),
@@ -298,7 +281,7 @@ async function carregarDados() {
         supabase.from("financeiro_importacoes").select("*").order("criado_em", { ascending: false }),
     ]);
 
-    for (const result of [fontes, oportunidades, projetos, regras, intervencoes, atividades, lancamentos, insumosUsados, insumos, opcoes, historico, propostas, propostaItens, projetoLinks, prospeccaoContatos, configuracoesAlertas, financeiroContas, financeiroCategorias, financeiroImportacoes]) {
+    for (const result of [fontes, oportunidades, projetos, regras, intervencoes, atividades, opcoes, historico, propostas, propostaItens, projetoLinks, prospeccaoContatos, configuracoesAlertas, financeiroContas, financeiroCategorias, financeiroImportacoes]) {
         if (result.error) throw result.error;
     }
 
@@ -312,9 +295,6 @@ async function carregarDados() {
     cache.regras = regras.data || [];
     cache.intervencoes = intervencoes.data || [];
     cache.atividades = atividades.data || [];
-    cache.lancamentos = lancamentos.data || [];
-    cache.insumosUsados = insumosUsados.data || [];
-    cache.insumos = insumos.data || [];
     cache.opcoes = opcoes.data || [];
     cache.historico = historico.data || [];
     cache.propostas = propostas.data || [];
@@ -325,6 +305,27 @@ async function carregarDados() {
     cache.financeiroContas = financeiroContas.data || [];
     cache.financeiroCategorias = financeiroCategorias.data || [];
     cache.financeiroImportacoes = financeiroImportacoes.data || [];
+    cache.lancamentosProjetos = await buscarLancamentosProjetos();
+    memoFinanceiroProjeto = new Map();
+}
+
+// Lancamentos do extrato vinculados a projetos (o Supabase devolve no maximo
+// 1000 linhas por consulta).
+async function buscarLancamentosProjetos() {
+    const linhas = [];
+    for (let inicio = 0; ; inicio += 1000) {
+        const { data, error } = await supabase
+            .from("financeiro_lancamentos")
+            .select("id, data, descricao, valor, categoria_id, projeto_id, intervencao_id")
+            .eq("destino", "projeto")
+            .not("projeto_id", "is", null)
+            .order("data")
+            .order("id")
+            .range(inicio, inicio + 999);
+        if (error) throw error;
+        linhas.push(...data);
+        if (data.length < 1000) return linhas;
+    }
 }
 
 async function render() {
@@ -378,18 +379,102 @@ function formatPercentual(valor) {
 
 const MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
 
-// Receita vem do cronograma (valor_receber das intervencoes nao canceladas dos
-// projetos contratados); gastos sao lancamentos + insumos rateados. Uma parcela
-// esta "em atraso" quando a intervencao foi executada ou a data ja passou e
-// ainda nao ha "Recebido em".
-function analiseFinanceira() {
-    const hoje = dataIsoLocal(new Date());
-    const contratos = cache.projetos.filter((p) => !STATUS_NEGOCIACAO.includes(p.status));
-    const gastoPorIntervencao = new Map();
-    const somarGasto = (intervencaoId, valor) => gastoPorIntervencao.set(intervencaoId, (gastoPorIntervencao.get(intervencaoId) || 0) + Number(valor || 0));
-    cache.lancamentos.filter((l) => l.tipo === "gasto").forEach((l) => somarGasto(l.intervencao_id, l.valor));
-    cache.insumosUsados.forEach((i) => somarGasto(i.intervencao_id, i.valor_rateado));
+// ---------------------------------------------------------------------------
+// Financeiro por projeto: os lancamentos do extrato vinculados ao projeto sao
+// distribuidos entre plantio e manutencoes pela data (ou pelo ajuste manual em
+// financeiro_lancamentos.intervencao_id).
 
+let memoFinanceiroProjeto = new Map();
+const TOLERANCIA_TARIFA_RECEBIMENTO = 0.01;
+
+function periodoIntervencao(intervencao) {
+    if (!intervencao.data_prevista) return null;
+    if (!intervencao.data_exata) {
+        const [ano, mes] = intervencao.data_prevista.split("-").map(Number);
+        return { inicio: `${intervencao.data_prevista.slice(0, 7)}-01`, fim: dataIsoLocal(new Date(ano, mes, 0)) };
+    }
+    const fim = intervencao.data_fim && intervencao.data_fim > intervencao.data_prevista ? intervencao.data_fim : intervencao.data_prevista;
+    return { inicio: intervencao.data_prevista, fim };
+}
+
+// Saida: servico em andamento na data; senao o proximo (compras antecedem o
+// servico); senao o ultimo. Entrada: em andamento; senao o ultimo ja feito (o
+// cliente paga depois); senao o proximo.
+function intervencaoAutomatica(lancamento, servicos) {
+    const data = lancamento.data;
+    const emAndamento = servicos.find((servico) => servico.periodo.inicio <= data && data <= servico.periodo.fim);
+    if (emAndamento) return emAndamento.intervencao;
+    const ultimo = servicos.filter((servico) => servico.periodo.fim < data).at(-1)?.intervencao;
+    const proximo = servicos.find((servico) => servico.periodo.inicio > data)?.intervencao;
+    return Number(lancamento.valor) < 0 ? (proximo || ultimo || null) : (ultimo || proximo || null);
+}
+
+// Uma parcela conta como recebida pelo "Recebido em" ou quando as entradas do
+// extrato distribuidas para ela cobrem o valor a receber. Fica "em atraso"
+// quando o servico foi executado ou terminou e ainda falta receber.
+function financeiroProjeto(projetoId) {
+    if (memoFinanceiroProjeto.has(projetoId)) return memoFinanceiroProjeto.get(projetoId);
+    const hoje = dataIsoLocal(new Date());
+    const intervencoes = cache.intervencoes
+        .filter((i) => i.projeto_id === projetoId)
+        .sort((a, b) => String(a.data_prevista || "9999").localeCompare(String(b.data_prevista || "9999")));
+    const servicos = intervencoes
+        .filter((i) => i.status !== "cancelada")
+        .map((intervencao) => ({ intervencao, periodo: periodoIntervencao(intervencao) }))
+        .filter((servico) => servico.periodo)
+        .sort((a, b) => a.periodo.inicio.localeCompare(b.periodo.inicio));
+    const grupos = new Map(intervencoes.map((i) => [i.id, { lancamentos: [], entradas: 0, saidas: 0 }]));
+    const semServico = { lancamentos: [], entradas: 0, saidas: 0 };
+    const porCategoria = new Map();
+    for (const lancamento of cache.lancamentosProjetos.filter((l) => l.projeto_id === projetoId)) {
+        const valor = Number(lancamento.valor);
+        const manual = lancamento.intervencao_id && grupos.has(lancamento.intervencao_id)
+            ? intervencoes.find((i) => i.id === lancamento.intervencao_id)
+            : null;
+        const alvo = manual || intervencaoAutomatica(lancamento, servicos);
+        const grupo = alvo ? grupos.get(alvo.id) : semServico;
+        grupo.lancamentos.push({ ...lancamento, valor, automatico: !manual, intervencaoAlvo: alvo });
+        if (valor >= 0) {
+            grupo.entradas += valor;
+        } else {
+            grupo.saidas += -valor;
+            const categoria = categoriaFinanceira(lancamento.categoria_id)?.nome || "Sem categoria";
+            porCategoria.set(categoria, (porCategoria.get(categoria) || 0) - valor);
+        }
+    }
+    const parcelas = intervencoes.map((intervencao) => {
+        const grupo = grupos.get(intervencao.id);
+        const valor = intervencao.status === "cancelada" ? 0 : Number(intervencao.valor_receber || 0);
+        const recebido = Math.max(intervencao.recebido_em ? valor : 0, grupo.entradas);
+        // Ate 1% de diferenca e tarifa descontada pelo banco (ex.: R$ 1.698,01 de R$ 1.700).
+        const falta = Math.round((valor - recebido) * 100) / 100;
+        const pendente = falta > valor * TOLERANCIA_TARIFA_RECEBIMENTO ? falta : 0;
+        const vencimento = intervencao.data_fim || intervencao.data_prevista;
+        let situacao = "sem_valor";
+        if (valor && !pendente) situacao = "recebida";
+        else if (valor) situacao = intervencao.status === "executada" || (vencimento && vencimento < hoje) ? "atrasada" : "a_receber";
+        return { intervencao, ...grupo, valor, recebido, pendente, vencimento, situacao, resultado: Math.max(valor, recebido) - grupo.saidas };
+    });
+    const soma = (lista, campo) => lista.reduce((total, item) => total + item[campo], 0);
+    const total = {
+        contratado: soma(parcelas, "valor"),
+        recebido: soma(parcelas, "recebido") + semServico.entradas,
+        aReceber: soma(parcelas.filter((p) => p.situacao === "a_receber"), "pendente"),
+        atrasado: soma(parcelas.filter((p) => p.situacao === "atrasada"), "pendente"),
+        gastos: soma(parcelas, "saidas") + semServico.saidas,
+    };
+    total.resultadoRealizado = total.recebido - total.gastos;
+    const receitaPrevista = Math.max(total.contratado, total.recebido);
+    total.resultado = receitaPrevista - total.gastos;
+    total.margem = receitaPrevista ? total.resultado / receitaPrevista : null;
+    const resultado = { total, parcelas, semServico, porCategoria, temExtrato: cache.lancamentosProjetos.some((l) => l.projeto_id === projetoId) };
+    memoFinanceiroProjeto.set(projetoId, resultado);
+    return resultado;
+}
+
+// Painel inicial: soma o financeiroProjeto() de cada contrato.
+function analiseFinanceira() {
+    const contratos = cache.projetos.filter((p) => !STATUS_NEGOCIACAO.includes(p.status));
     const inicioMes = new Date();
     inicioMes.setDate(1);
     const meses = Array.from({ length: 12 }, (_, indice) => {
@@ -401,37 +486,22 @@ function analiseFinanceira() {
     const total = { contratado: 0, recebido: 0, aReceber: 0, atrasado: 0, gastos: 0, semData: 0, depoisDoPeriodo: 0 };
     const atrasados = [];
     const porProjeto = contratos.map((projeto) => {
-        const linha = { projeto, contratado: 0, recebido: 0, aReceber: 0, atrasado: 0, gastos: 0 };
-        for (const intervencao of cache.intervencoes.filter((i) => i.projeto_id === projeto.id)) {
-            linha.gastos += gastoPorIntervencao.get(intervencao.id) || 0;
-            if (intervencao.status === "cancelada") continue;
-            const valor = Number(intervencao.valor_receber || 0);
-            if (!valor) continue;
-            linha.contratado += valor;
-            if (intervencao.recebido_em) {
-                linha.recebido += valor;
-                continue;
-            }
-            const vencimento = intervencao.data_fim || intervencao.data_prevista;
-            if (intervencao.status === "executada" || (vencimento && vencimento < hoje)) {
-                linha.atrasado += valor;
-                atrasados.push({ intervencao, projeto, valor });
-                continue;
-            }
-            linha.aReceber += valor;
+        const financeiro = financeiroProjeto(projeto.id);
+        for (const parcela of financeiro.parcelas) {
+            if (parcela.situacao === "atrasada") atrasados.push({ intervencao: parcela.intervencao, projeto, valor: parcela.pendente });
+            if (parcela.situacao !== "a_receber") continue;
             // Agrupa pelo termino do servico (mesma data que define o atraso).
-            const mes = vencimento ? mesPorChave.get(vencimento.slice(0, 7)) : null;
-            if (mes) mes.valor += valor;
-            else if (vencimento) total.depoisDoPeriodo += valor;
-            else total.semData += valor;
+            const mes = parcela.vencimento ? mesPorChave.get(parcela.vencimento.slice(0, 7)) : null;
+            if (mes) mes.valor += parcela.pendente;
+            else if (parcela.vencimento) total.depoisDoPeriodo += parcela.pendente;
+            else total.semData += parcela.pendente;
         }
-        for (const chave of ["contratado", "recebido", "aReceber", "atrasado", "gastos"]) total[chave] += linha[chave];
-        linha.resultado = linha.contratado - linha.gastos;
-        linha.margem = linha.contratado ? linha.resultado / linha.contratado : null;
-        return linha;
+        for (const chave of ["contratado", "recebido", "aReceber", "atrasado", "gastos"]) total[chave] += financeiro.total[chave];
+        return { projeto, ...financeiro.total };
     });
-    total.resultado = total.contratado - total.gastos;
-    total.margem = total.contratado ? total.resultado / total.contratado : null;
+    const receitaPrevista = Math.max(total.contratado, total.recebido);
+    total.resultado = receitaPrevista - total.gastos;
+    total.margem = receitaPrevista ? total.resultado / receitaPrevista : null;
     atrasados.sort((a, b) => String(a.intervencao.data_prevista).localeCompare(String(b.intervencao.data_prevista)));
     porProjeto.sort((a, b) => b.contratado - a.contratado);
     return { total, porProjeto, meses, atrasados };
@@ -490,7 +560,7 @@ function renderAnaliseFinanceira(financeiro) {
                     <small>${formatPercentual(percentualRecebido)} do contratado</small></div>
                 <div class="kpi"><span>A receber</span><strong>${formatMoeda(total.aReceber)}</strong><small>parcelas futuras</small></div>
                 <div class="kpi ${total.atrasado ? "kpi-alerta" : ""}"><span>Em atraso</span><strong>${formatMoeda(total.atrasado)}</strong><small>${total.atrasado ? `${financeiro.atrasados.length} parcela(s) sem recebimento` : "nenhuma parcela vencida"}</small></div>
-                <div class="kpi"><span>Gastos lançados</span><strong>${formatMoeda(total.gastos)}</strong><small>gastos + insumos rateados</small></div>
+                <div class="kpi"><span>Gastos</span><strong>${formatMoeda(total.gastos)}</strong><small>saídas do extrato vinculadas aos contratos</small></div>
                 <div class="kpi"><span>Resultado previsto</span><strong>${formatMoeda(total.resultado)}</strong><small>${total.margem === null ? "sem valores contratados" : `margem de ${formatPercentual(total.margem)}`}</small></div>
             </div>
             <div class="financeiro-previsao">
@@ -559,7 +629,7 @@ function renderDashboard() {
                 <p class="total-negociacao"><span>Total estimado</span><strong>${formatMoeda(valorNegociacao)}</strong></p>` : `<p class="vazio compacto">Nenhum projeto em prospecção ou orçamento.</p>`}
             </div>
             <div class="painel ${financeiro.atrasados.length ? "painel-alertas" : ""}">
-                <div class="painel-topo"><div><h2>Recebimentos em atraso</h2><p class="subtexto">Executados ou com data passada, sem "Recebido em".</p></div></div>
+                <div class="painel-topo"><div><h2>Recebimentos em atraso</h2><p class="subtexto">Serviços executados ou com data passada que ainda não foram pagos (nem pelo extrato, nem por "Recebido em").</p></div></div>
                 ${financeiro.atrasados.length ? `<div class="lista-compacta">${financeiro.atrasados.map(({ intervencao, projeto, valor }) => `
                     <article><div><button class="link-projeto abrir-projeto-dashboard" type="button" data-id="${projeto.id}" data-intervencao-id="${intervencao.id}">${escapeHtml(intervencao.titulo)}</button><span>${escapeHtml(projeto.nome)} · ${escapeHtml(formatPeriodo(intervencao))} · ${escapeHtml(formatStatus(intervencao.status))}</span></div><em>${formatMoeda(valor)}</em></article>
                 `).join("")}</div>` : `<p class="vazio compacto">Nenhum recebimento em atraso.</p>`}
@@ -838,8 +908,7 @@ function bindProjetoDetalhe(container) {
     container.querySelectorAll(".nova-intervencao-form").forEach((form) => form.addEventListener("submit", criarIntervencao));
     container.querySelectorAll(".nova-atividade-form").forEach((form) => form.addEventListener("submit", criarAtividade));
     container.querySelectorAll(".atividade-check").forEach((input) => input.addEventListener("change", alternarAtividade));
-    container.querySelectorAll(".novo-lancamento-form").forEach((form) => form.addEventListener("submit", criarLancamento));
-    container.querySelectorAll(".novo-insumo-form").forEach((form) => form.addEventListener("submit", criarInsumoUsado));
+    container.querySelectorAll(".fin-distribuicao").forEach((select) => select.addEventListener("change", distribuirLancamento));
     container.querySelectorAll(".nova-proposta-form").forEach((form) => form.addEventListener("submit", criarProposta));
     container.querySelectorAll(".proposta-form").forEach((form) => form.addEventListener("submit", salvarProposta));
     container.querySelectorAll(".novo-proposta-item-form").forEach((form) => form.addEventListener("submit", criarPropostaItem));
@@ -898,6 +967,7 @@ function renderProjetoDetalhe(projeto) {
                 </div>
                 <p class="meta-linha">Atualizado em ${escapeHtml(formatDataHora(projeto.atualizado_em))}</p>
             </form>
+            ${renderAnaliseFinanceiraProjeto(projeto)}
             <section class="erp-projeto">
                 <div class="painel-topo compacto">
                     <div>
@@ -954,15 +1024,128 @@ function renderProjetoDetalhe(projeto) {
     `;
 }
 
+const SITUACOES_PARCELA = {
+    recebida: "Recebida",
+    a_receber: "A receber",
+    atrasada: "Em atraso",
+    sem_valor: "Sem valor a receber",
+};
+
+function resumoParcela(parcela) {
+    if (parcela.situacao === "recebida") {
+        const quando = parcela.intervencao.recebido_em && parcela.recebido <= parcela.valor ? ` em ${formatData(parcela.intervencao.recebido_em)}` : "";
+        return `Recebido ${formatMoeda(parcela.recebido)}${quando}`;
+    }
+    if (parcela.situacao === "sem_valor") return parcela.recebido ? `Recebido ${formatMoeda(parcela.recebido)}` : "Sem valor a receber";
+    const parcial = parcela.recebido ? ` (recebido ${formatMoeda(parcela.recebido)} de ${formatMoeda(parcela.valor)})` : "";
+    return `${parcela.situacao === "atrasada" ? "Em atraso" : "A receber"} ${formatMoeda(parcela.pendente)}${parcial}`;
+}
+
+function opcoesDistribuicaoLancamento(lancamento, intervencoes) {
+    const automatica = lancamento.automatico ? lancamento.intervencaoAlvo : null;
+    const rotuloAutomatico = automatica ? `Automático: ${automatica.titulo || "serviço"}` : "Automático";
+    return `
+        <option value="" ${lancamento.automatico ? "selected" : ""}>${escapeHtml(rotuloAutomatico)}</option>
+        ${intervencoes.map((i) => `<option value="${i.id}" ${!lancamento.automatico && lancamento.intervencaoAlvo?.id === i.id ? "selected" : ""}>${escapeHtml(`${i.titulo || "Serviço"} · ${formatPeriodo(i)}`)}</option>`).join("")}
+    `;
+}
+
+function renderLancamentosDistribuidos(lancamentos, intervencoes) {
+    return `
+        <table class="tabela-extrato tabela-distribuicao">
+            <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Valor</th><th>Serviço</th></tr></thead>
+            <tbody>${lancamentos.map((l) => `
+                <tr>
+                    <td>${escapeHtml(formatData(l.data))}</td>
+                    <td class="fin-descricao">${escapeHtml(l.descricao || "—")}</td>
+                    <td>${escapeHtml(categoriaFinanceira(l.categoria_id)?.nome || "Sem categoria")}</td>
+                    <td class="fin-valor ${l.valor < 0 ? "saida" : "entrada"}">${l.valor < 0 ? "−" : "+"} ${formatMoeda(Math.abs(l.valor))}</td>
+                    <td><select class="fin-distribuicao" data-id="${l.id}" aria-label="Serviço deste lançamento">${opcoesDistribuicaoLancamento(l, intervencoes)}</select></td>
+                </tr>
+            `).join("")}</tbody>
+        </table>
+    `;
+}
+
+function renderAnaliseFinanceiraProjeto(projeto) {
+    const { total, parcelas, semServico, porCategoria, temExtrato } = financeiroProjeto(projeto.id);
+    const intervencoesAtivas = parcelas.map((p) => p.intervencao).filter((i) => i.status !== "cancelada");
+    const percentualRecebido = total.contratado ? Math.min(total.recebido / total.contratado, 1) : 0;
+    const categorias = [...porCategoria.entries()].sort((a, b) => b[1] - a[1]);
+    const maiorCategoria = categorias[0]?.[1] || 0;
+    return `
+        <section class="analise-projeto">
+            <div class="painel-topo compacto">
+                <div>
+                    <h3>Análise financeira</h3>
+                    <p class="subtexto">Entradas e gastos do extrato vinculados a este projeto, distribuídos pela data entre plantio e manutenções.</p>
+                </div>
+            </div>
+            <div class="financeiro-kpis">
+                <div class="kpi"><span>Contratado</span><strong>${formatMoeda(total.contratado)}</strong><small>valores a receber do cronograma</small></div>
+                <div class="kpi"><span>Recebido</span><strong>${formatMoeda(total.recebido)}</strong>
+                    <div class="medidor" role="img" aria-label="${escapeHtml(`${formatPercentual(percentualRecebido)} do contratado`)}"><span style="width:${percentualRecebido * 100}%"></span></div>
+                    <small>${total.contratado ? `${formatPercentual(percentualRecebido)} do contratado` : "sem valor contratado"}</small></div>
+                <div class="kpi ${total.atrasado ? "kpi-alerta" : ""}"><span>A receber</span><strong>${formatMoeda(total.aReceber + total.atrasado)}</strong><small>${total.atrasado ? `${formatMoeda(total.atrasado)} em atraso` : "nada em atraso"}</small></div>
+                <div class="kpi"><span>Gastos</span><strong>${formatMoeda(total.gastos)}</strong><small>saídas do extrato</small></div>
+                <div class="kpi"><span>Resultado até agora</span><strong class="${total.resultadoRealizado < 0 ? "valor-alerta" : ""}">${formatMoeda(total.resultadoRealizado)}</strong><small>recebido − gastos</small></div>
+                <div class="kpi"><span>Resultado previsto</span><strong class="${total.resultado < 0 ? "valor-alerta" : ""}">${formatMoeda(total.resultado)}</strong><small>${total.margem === null ? "sem receita prevista" : `margem de ${formatPercentual(total.margem)}`}</small></div>
+            </div>
+            ${!temExtrato ? `<p class="vazio compacto">Nenhum lançamento do extrato vinculado a este projeto ainda. Vincule as entradas e saídas na aba <a href="#financeiro">Financeiro</a>.</p>` : `
+            ${categorias.length ? `
+            <div class="gastos-categoria">
+                <h4>Gastos por categoria</h4>
+                ${categorias.map(([nome, valor]) => `
+                    <div class="barra-categoria">
+                        <span>${escapeHtml(nome)}</span>
+                        <div class="barra-trilho"><span style="width:${(valor / maiorCategoria) * 100}%"></span></div>
+                        <b>${formatMoeda(valor)}</b>
+                    </div>
+                `).join("")}
+            </div>` : ""}`}
+            <div class="parcelas-financeiras">
+                <h4>Por plantio e manutenção</h4>
+                ${parcelas.length ? parcelas.map((parcela) => `
+                    <details class="parcela-financeira situacao-${parcela.situacao}">
+                        <summary>
+                            <span class="parcela-servico"><strong>${escapeHtml(parcela.intervencao.titulo || "Serviço")}</strong><small>${escapeHtml(formatPeriodo(parcela.intervencao))} · ${escapeHtml(formatStatus(parcela.intervencao.status))}</small></span>
+                            <span><small>Valor</small>${formatMoeda(parcela.valor)}</span>
+                            <span><small>Recebido</small>${formatMoeda(parcela.recebido)}</span>
+                            <span><small>Gastos</small>${formatMoeda(parcela.saidas)}</span>
+                            <span><small>Resultado</small><b class="${parcela.resultado < 0 ? "valor-alerta" : ""}">${formatMoeda(parcela.resultado)}</b></span>
+                            <span class="selo-situacao">${escapeHtml(SITUACOES_PARCELA[parcela.situacao])}</span>
+                        </summary>
+                        ${parcela.lancamentos.length
+                            ? renderLancamentosDistribuidos(parcela.lancamentos, intervencoesAtivas)
+                            : `<p class="vazio compacto">Nenhum lançamento do extrato distribuído para este serviço.</p>`}
+                    </details>
+                `).join("") : `<p class="vazio compacto">Cadastre o plantio e as manutenções para distribuir os lançamentos.</p>`}
+                ${semServico.lancamentos.length ? `
+                    <details class="parcela-financeira" open>
+                        <summary><span class="parcela-servico"><strong>Sem plantio ou manutenção com data</strong><small>cadastre as datas dos serviços para distribuir</small></span><span><small>Entradas</small>${formatMoeda(semServico.entradas)}</span><span><small>Gastos</small>${formatMoeda(semServico.saidas)}</span></summary>
+                        ${renderLancamentosDistribuidos(semServico.lancamentos, intervencoesAtivas)}
+                    </details>` : ""}
+            </div>
+        </section>
+    `;
+}
+
+async function distribuirLancamento(event) {
+    const select = event.target;
+    const { error } = await supabase
+        .from("financeiro_lancamentos")
+        .update({ intervencao_id: select.value ? Number(select.value) : null })
+        .eq("id", Number(select.dataset.id));
+    if (error) return setMensagem(error.message, "erro");
+    await render();
+    setMensagem(select.value ? "Lançamento distribuído para o serviço escolhido." : "Lançamento voltou para a distribuição automática.");
+}
+
 function renderIntervencaoCard(intervencao) {
     const atividades = cache.atividades.filter((item) => item.intervencao_id === intervencao.id);
     const opcoesAtividade = opcoesConfig("atividade", ATIVIDADES_MANUTENCAO);
-    const lancamentos = cache.lancamentos.filter((item) => item.intervencao_id === intervencao.id);
-    const insumosUsados = cache.insumosUsados.filter((item) => item.intervencao_id === intervencao.id);
-    const gastos = lancamentos.filter((item) => item.tipo === "gasto").reduce((total, item) => total + Number(item.valor || 0), 0);
-    const rateios = insumosUsados.reduce((total, item) => total + Number(item.valor_rateado || 0), 0);
-    const previsto = Number(intervencao.valor_receber || 0);
-    const saldoPrevisto = previsto - gastos - rateios;
+    const parcela = financeiroProjeto(intervencao.projeto_id).parcelas.find((item) => item.intervencao.id === intervencao.id);
+    const saldoPrevisto = parcela.resultado;
 
     return `
         <article class="intervencao-card tipo-${escapeHtml(intervencao.tipo)} ${intervencao.id === intervencaoModalDestaqueId ? "intervencao-destaque" : ""}" data-intervencao-card="${intervencao.id}">
@@ -989,7 +1172,7 @@ function renderIntervencaoCard(intervencao) {
                     <label class="checkbox linha-checkbox"><input type="checkbox" name="contato_feito" value="1" ${intervencao.contato_feito ? "checked" : ""}> Contato feito</label>
                     <label class="campo-largo">Observações<textarea name="observacoes">${escapeHtml(intervencao.observacoes || "")}</textarea></label>
                 </div>
-                <div class="card-acoes"><span>${intervencao.recebido_em ? `Recebido ${formatMoeda(previsto)} em ${escapeHtml(formatData(intervencao.recebido_em))}` : `A receber ${formatMoeda(previsto)}`} | Gastos ${formatMoeda(gastos + rateios)}</span><div class="acoes-intervencao"><button class="secundario botao-excluir-texto" type="button" data-excluir="intervencoes" data-id="${intervencao.id}" data-descricao="${escapeHtml(intervencao.titulo || (intervencao.tipo === "plantio" ? "Plantio" : "Manutenção"))}">Excluir</button><button type="submit">Salvar intervenção</button></div></div>
+                <div class="card-acoes"><span>${escapeHtml(resumoParcela(parcela))} | Gastos ${formatMoeda(parcela.saidas)}</span><div class="acoes-intervencao"><button class="secundario botao-excluir-texto" type="button" data-excluir="intervencoes" data-id="${intervencao.id}" data-descricao="${escapeHtml(intervencao.titulo || (intervencao.tipo === "plantio" ? "Plantio" : "Manutenção"))}">Excluir</button><button type="submit">Salvar intervenção</button></div></div>
             </form>
             <div class="subgrid">
                 <section>
@@ -1004,25 +1187,20 @@ function renderIntervencaoCard(intervencao) {
                     </form>
                 </section>
                 <section>
-                    <h4>Gastos</h4>
-                    <div class="lista-mini">
-                        ${lancamentos.length ? lancamentos.map((l) => `<div class="linha-excluivel"><span>${escapeHtml(formatStatus(l.categoria))}: ${formatMoeda(l.valor)} - ${escapeHtml(l.descricao)}</span>${botaoExcluirMini("intervencao_lancamentos", l.id, `${formatStatus(l.categoria)}: ${formatMoeda(l.valor)} - ${l.descricao}`)}</div>`).join("") : `<span class="vazio compacto">Sem gastos lançados.</span>`}
-                        ${insumosUsados.length ? insumosUsados.map((i) => `<div class="linha-excluivel"><span>Insumo rateado: ${escapeHtml(i.nome)} ${escapeHtml(i.quantidade_usada)} ${escapeHtml(i.unidade)} = ${formatMoeda(i.valor_rateado)}</span>${botaoExcluirMini("intervencao_insumos", i.id, `${i.nome} = ${formatMoeda(i.valor_rateado)}`)}</div>`).join("") : ""}
-                    </div>
-                    <form class="novo-lancamento-form mini-form" data-intervencao-id="${intervencao.id}">
-                        <select name="categoria">${opcoesSelect(opcoesConfig("categoria_lancamento", CATEGORIAS_LANCAMENTO).filter(([valor]) => valor !== "recebimento"), "combustivel")}</select>
-                        <input name="descricao" placeholder="Descrição" required>
-                        <input name="valor" type="number" step="0.01" min="0" placeholder="Valor" required>
-                        <button type="submit">Lancar</button>
-                    </form>
-                    <form class="novo-insumo-form mini-form" data-intervencao-id="${intervencao.id}">
-                        <input name="nome" placeholder="Insumo usado">
-                        <select name="unidade">${opcoesSelect(opcoesConfig("unidade_insumo", UNIDADES_INSUMO), "kg")}</select>
-                        <input name="quantidade_usada" type="number" step="0.001" min="0" placeholder="Usado">
-                        <input name="quantidade_total_compra" type="number" step="0.001" min="0" placeholder="Total compra">
-                        <input name="valor_total_compra" type="number" step="0.01" min="0" placeholder="Valor compra">
-                        <button type="submit">Ratear</button>
-                    </form>
+                    <h4>Lançamentos do extrato</h4>
+                    ${parcela.lancamentos.length ? `
+                        <div class="extrato-servico">
+                            ${parcela.lancamentos.map((l) => `
+                                <div class="extrato-servico-linha">
+                                    <time>${escapeHtml(formatData(l.data))}</time>
+                                    <span>${escapeHtml(l.descricao || "—")}<small>${escapeHtml(categoriaFinanceira(l.categoria_id)?.nome || "Sem categoria")}</small></span>
+                                    <b class="fin-valor ${l.valor < 0 ? "saida" : "entrada"}">${l.valor < 0 ? "−" : "+"} ${formatMoeda(Math.abs(l.valor))}</b>
+                                </div>
+                            `).join("")}
+                            <div class="extrato-servico-total"><span>Entradas ${formatMoeda(parcela.entradas)}</span><span>Gastos ${formatMoeda(parcela.saidas)}</span></div>
+                        </div>`
+                        : `<p class="vazio compacto">Nenhum lançamento do extrato distribuído para este serviço.</p>`}
+                    <p class="subtexto">Os lançamentos vêm da aba Financeiro (destino = este projeto), distribuídos pela data. Para mover um lançamento de serviço, use "Análise financeira", no topo do projeto.</p>
                 </section>
             </div>
                 </div>
@@ -1131,10 +1309,8 @@ function botaoExcluirMini(tabela, id, descricao) {
 }
 
 const CONFIRMACOES_EXCLUSAO = {
-    intervencoes: (descricao) => `Excluir "${descricao}"?\n\nAs atividades, os gastos e os insumos rateados desta intervenção também serão apagados.`,
+    intervencoes: (descricao) => `Excluir "${descricao}"?\n\nAs atividades desta intervenção também serão apagadas. Os lançamentos do extrato distribuídos para ela voltam para a distribuição automática.`,
     intervencao_atividades: (descricao) => `Excluir a atividade "${descricao}"?`,
-    intervencao_lancamentos: (descricao) => `Excluir o gasto "${descricao}"?`,
-    intervencao_insumos: (descricao) => `Excluir o insumo rateado "${descricao}"?`,
 };
 
 const PALAVRA_EXCLUSAO = "EXCLUIR";
@@ -1356,45 +1532,6 @@ async function alternarAtividade(event) {
         .eq("id", event.target.dataset.id);
     if (error) return setMensagem(error.message, "erro");
     setMensagem("Atividade atualizada.");
-}
-
-async function criarLancamento(event) {
-    event.preventDefault();
-    const dados = Object.fromEntries(new FormData(event.target).entries());
-    const categoriasGasto = opcoesConfig("categoria_lancamento", CATEGORIAS_LANCAMENTO).filter(([valor]) => valor !== "recebimento");
-    const payload = {
-        intervencao_id: Number(event.target.dataset.intervencaoId),
-        tipo: "gasto",
-        categoria: dados.categoria || categoriasGasto[0]?.[0] || "combustivel",
-        descricao: dados.descricao,
-        valor: Number(dados.valor || 0),
-        data_lancamento: new Date().toISOString().slice(0, 10),
-    };
-    const { error } = await supabase.from("intervencao_lancamentos").insert(payload);
-    if (error) return setMensagem(error.message, "erro");
-    setMensagem("Lancamento criado.");
-    await render();
-}
-
-async function criarInsumoUsado(event) {
-    event.preventDefault();
-    const dados = Object.fromEntries(new FormData(event.target).entries());
-    if (!dados.nome || !dados.quantidade_usada || !dados.quantidade_total_compra || !dados.valor_total_compra) {
-        return setMensagem("Informe nome, quantidade usada, total da compra e valor da compra para ratear.", "erro");
-    }
-    const payload = {
-        intervencao_id: Number(event.target.dataset.intervencaoId),
-        nome: dados.nome,
-        unidade: dados.unidade || "un",
-        quantidade_usada: Number(dados.quantidade_usada || 0),
-        quantidade_total_compra: Number(dados.quantidade_total_compra || 0),
-        valor_total_compra: Number(dados.valor_total_compra || 0),
-        compra_exclusiva: false,
-    };
-    const { error } = await supabase.from("intervencao_insumos").insert(payload);
-    if (error) return setMensagem(error.message, "erro");
-    setMensagem("Insumo rateado.");
-    await render();
 }
 
 async function criarProposta(event) {
@@ -1947,9 +2084,8 @@ function renderLicitacoes() {
 function renderConfiguracoes() {
     setPage("Configurações", "Cadastros usados nos formulários", `<a class="botao secundario" href="#projetos">Projetos</a>`);
     const grupos = [
+        // Categorias financeiras ficam na aba Financeiro (financeiro_categorias).
         ["atividade", "Atividades de manutenção", "Ex.: irrigação, poda, tutoramento"],
-        ["categoria_lancamento", "Categorias financeiras", "Ex.: pedágio, hospedagem, frete"],
-        ["unidade_insumo", "Unidades de insumo", "Ex.: saco, bandeja, m³"],
     ];
 
     conteudo.innerHTML = `
@@ -2247,10 +2383,11 @@ function valorDestinoLancamento(lancamento) {
     return lancamento.destino || "";
 }
 
+// Mudar o destino desfaz o ajuste manual de distribuicao entre os servicos.
 function payloadDestino(valor) {
-    if (valor.startsWith("projeto:")) return { destino: "projeto", projeto_id: Number(valor.split(":")[1]) };
-    if (valor === "corporativo" || valor === "transferencia") return { destino: valor, projeto_id: null };
-    return { destino: null, projeto_id: null };
+    if (valor.startsWith("projeto:")) return { destino: "projeto", projeto_id: Number(valor.split(":")[1]), intervencao_id: null };
+    if (valor === "corporativo" || valor === "transferencia") return { destino: valor, projeto_id: null, intervencao_id: null };
+    return { destino: null, projeto_id: null, intervencao_id: null };
 }
 
 function nomeDestinoLancamento(lancamento) {

@@ -630,6 +630,144 @@ button.link-projeto:focus-visible {
 
 .total-negociacao span { color: var(--muted); }
 
+/* Analise financeira dentro do projeto */
+.analise-projeto {
+    display: grid;
+    gap: 1rem;
+    background: white;
+    border: 1px solid var(--linha);
+    border-radius: 8px;
+    padding: 1.1rem;
+}
+
+.analise-projeto > * { min-width: 0; }
+
+.analise-projeto h4 {
+    margin: 0 0 0.5rem;
+}
+
+.barra-categoria {
+    display: grid;
+    grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.2rem 0;
+    font-size: 0.85rem;
+}
+
+.barra-categoria b {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.barra-trilho {
+    height: 10px;
+}
+
+.barra-trilho span {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+    border-radius: 0 4px 4px 0;
+    background: var(--verde);
+}
+
+.parcelas-financeiras {
+    display: grid;
+    gap: 0.45rem;
+}
+
+.parcela-financeira {
+    border: 1px solid #edf0f2;
+    border-left: 4px solid var(--linha);
+    border-radius: 8px;
+    background: #fbfcfb;
+}
+
+.parcela-financeira.situacao-recebida { border-left-color: var(--verde); }
+.parcela-financeira.situacao-a_receber { border-left-color: var(--azul); }
+.parcela-financeira.situacao-atrasada { border-left-color: var(--vermelho); }
+
+.parcela-financeira > summary {
+    display: grid;
+    grid-template-columns: minmax(12rem, 2fr) repeat(4, minmax(6.5rem, 1fr)) auto;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.8rem;
+    cursor: pointer;
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.parcela-financeira > summary small {
+    display: block;
+    color: var(--muted);
+    font-size: 0.74rem;
+}
+
+.parcela-servico strong { display: block; }
+
+.selo-situacao {
+    justify-self: end;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: #edf1ef;
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.situacao-recebida .selo-situacao { background: var(--verde-claro); color: var(--verde-escuro); }
+.situacao-a_receber .selo-situacao { background: #e9f1fa; color: var(--azul); }
+.situacao-atrasada .selo-situacao { background: var(--vermelho-claro); color: var(--vermelho); }
+
+.parcela-financeira[open] > summary { border-bottom: 1px solid #edf0f2; }
+
+.parcela-financeira > table,
+.parcela-financeira > p {
+    margin: 0.4rem 0.8rem 0.7rem;
+    width: calc(100% - 1.6rem);
+}
+
+.tabela-distribuicao .fin-distribuicao { min-width: 12rem; }
+
+.extrato-servico {
+    display: grid;
+    border: 1px solid #edf0f2;
+    border-radius: 6px;
+    background: white;
+    font-size: 0.84rem;
+}
+
+.extrato-servico-linha {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+    gap: 0.6rem;
+    align-items: baseline;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid #edf0f2;
+}
+
+.extrato-servico-linha time {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.extrato-servico-linha small {
+    display: block;
+    color: var(--muted);
+    font-size: 0.75rem;
+}
+
+.extrato-servico-total {
+    display: flex;
+    justify-content: flex-end;
+    gap: 1rem;
+    padding: 0.4rem 0.6rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
 /* Financeiro: extrato bancario */
 .financeiro-topo {
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -2138,6 +2276,10 @@ th {
 @media (max-width: 680px) {
     .grafico-colunas { padding-left: 3.4rem; }
     .categoria-financeiro-form { grid-template-columns: 1fr; }
+    .parcela-financeira > summary { grid-template-columns: 1fr 1fr; }
+    .parcela-servico, .selo-situacao { grid-column: 1 / -1; justify-self: start; }
+    .barra-categoria { grid-template-columns: 1fr auto; }
+    .barra-trilho { grid-column: 1 / -1; grid-row: 2; }
     .grafico-eixo-x span:nth-child(even) { visibility: hidden; }
     .conteudo { padding: 0.9rem; }
     .topbar, .painel-topo, .card-acoes { align-items: stretch; flex-direction: column; }
