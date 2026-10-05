@@ -1,6 +1,7 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 import { safeExternalUrl } from "./url_safety.js";
 import { decodificarOfx, lerOfx } from "./ofx.js";
+import { ehExtratoMercadoPagoCsv, lerExtratoMercadoPagoCsv } from "./extrato_csv.js";
 
 const config = window.PORTAL_CONFIG || {};
 const supabase = createClient(config.SUPABASE_URL || "", config.SUPABASE_ANON_KEY || "");
@@ -2358,12 +2359,12 @@ function desenharFinanceiro() {
     const categoriasAtivas = cache.financeiroCategorias.filter((categoria) => categoria.ativo);
     const rotuloTipoCategoria = { receita: "Receitas", despesa: "Despesas", ambos: "Receitas e despesas" };
 
-    setPage("Financeiro", "Extrato bancário", `<label class="botao" for="arquivoOfx">Importar extrato OFX</label>`);
+    setPage("Financeiro", "Extrato bancário", `<label class="botao" for="arquivoExtrato">Importar extrato (CSV ou OFX)</label>`);
     conteudo.innerHTML = `
-        <input id="arquivoOfx" type="file" accept=".ofx,.OFX" hidden>
+        <input id="arquivoExtrato" type="file" accept=".csv,.ofx" hidden>
         <section class="financeiro-kpis financeiro-topo">
             ${saldos.length ? saldos.map(({ conta, importacao }) => `<div class="kpi"><span>Saldo · ${escapeHtml(conta.nome)}</span><strong>${importacao ? formatMoeda(importacao.saldo_final) : "—"}</strong><small>${importacao ? `em ${escapeHtml(formatData(importacao.saldo_data))}, pelo último extrato` : "sem saldo no extrato"}</small></div>`).join("")
-                : `<div class="kpi"><span>Saldo</span><strong>—</strong><small>importe o primeiro extrato OFX</small></div>`}
+                : `<div class="kpi"><span>Saldo</span><strong>—</strong><small>importe o primeiro extrato</small></div>`}
             <div class="kpi"><span>Entradas no filtro</span><strong>${formatMoeda(resumo.entradas)}</strong><small>sem transferências entre contas</small></div>
             <div class="kpi"><span>Saídas no filtro</span><strong>${formatMoeda(resumo.saidas)}</strong><small>sem transferências entre contas</small></div>
             <div class="kpi"><span>Resultado</span><strong class="${resumo.resultado < 0 ? "valor-alerta" : ""}">${formatMoeda(resumo.resultado)}</strong><small>entradas − saídas</small></div>
@@ -2431,7 +2432,7 @@ function desenharFinanceiro() {
                         `).join("")}
                     </tbody>
                 </table>
-            </div>` : `<p class="vazio">${financeiroLancamentos.length ? "Nenhum lançamento com esse filtro." : `Nenhum lançamento neste período. Use "Importar extrato OFX" para trazer o extrato do Mercado Pago.`}</p>`}
+            </div>` : `<p class="vazio">${financeiroLancamentos.length ? "Nenhum lançamento com esse filtro." : `Nenhum lançamento neste período. Use "Importar extrato" para trazer o extrato do Mercado Pago.`}</p>`}
         </section>
         <section class="painel financeiro-resumos">
             <div class="painel-topo"><div><h2>Resumo do filtro</h2><p class="subtexto">Transferências entre contas ficam fora${resumo.transferencias ? ` (saldo de ${formatMoeda(resumo.transferencias)} no período)` : ""}.</p></div></div>
@@ -2478,10 +2479,10 @@ function desenharFinanceiro() {
 }
 
 function bindFinanceiro() {
-    $("#arquivoOfx").addEventListener("change", (event) => {
+    $("#arquivoExtrato").addEventListener("change", (event) => {
         const arquivo = event.target.files?.[0];
         event.target.value = "";
-        if (arquivo) importarOfx(arquivo);
+        if (arquivo) importarExtrato(arquivo);
     });
     $("#filtroFinanceiro").addEventListener("submit", (event) => {
         event.preventDefault();
@@ -2567,17 +2568,18 @@ async function aplicarLoteFinanceiro(event) {
     await renderFinanceiro();
 }
 
-function nomeContaOfx(extrato) {
+function nomeContaExtrato(extrato) {
+    if (extrato.nomeConta) return extrato.nomeConta;
     const banco = ["323", "0323"].includes(String(extrato.bancoId)) ? "Mercado Pago" : `Banco ${extrato.bancoId || "?"}`;
     return extrato.contaId ? `${banco} · conta ${extrato.contaId}` : banco;
 }
 
-function confirmarImportacaoOfx(texto, podeImportar) {
-    let modal = $("#importarOfxModal");
+function confirmarImportacaoExtrato(texto, podeImportar) {
+    let modal = $("#importarExtratoModal");
     if (!modal) {
         modal = document.createElement("dialog");
-        modal.id = "importarOfxModal";
-        modal.className = "modal-confirmar-exclusao modal-importar-ofx";
+        modal.id = "importarExtratoModal";
+        modal.className = "modal-confirmar-exclusao modal-importar-extrato";
         modal.innerHTML = `
             <h2>Importar extrato</h2>
             <p class="confirmar-exclusao-mensagem"></p>
@@ -2595,12 +2597,20 @@ function confirmarImportacaoOfx(texto, podeImportar) {
     return abrirDialogo(modal);
 }
 
-async function importarOfx(arquivo) {
+// Aceita OFX de qualquer banco e o CSV de extrato do Mercado Pago; os dois
+// leitores devolvem o mesmo formato.
+function lerArquivoExtrato(texto) {
+    if (/<OFX>/i.test(texto)) return lerOfx(texto);
+    if (ehExtratoMercadoPagoCsv(texto)) return lerExtratoMercadoPagoCsv(texto);
+    throw new Error("Formato não reconhecido. Envie o extrato OFX ou o CSV de extrato do Mercado Pago.");
+}
+
+async function importarExtrato(arquivo) {
     let extrato;
     try {
-        extrato = lerOfx(decodificarOfx(await arquivo.arrayBuffer()));
+        extrato = lerArquivoExtrato(decodificarOfx(await arquivo.arrayBuffer()));
     } catch (error) {
-        return setMensagem(error.message || "Não foi possível ler o arquivo OFX.", "erro");
+        return setMensagem(error.message || "Não foi possível ler o arquivo do extrato.", "erro");
     }
     if (!extrato.lancamentos.length) return setMensagem("Nenhum lançamento encontrado no arquivo.", "erro");
 
@@ -2619,18 +2629,21 @@ async function importarOfx(arquivo) {
     const saidas = novos.filter((l) => l.valor < 0).reduce((soma, l) => soma - l.valor, 0);
     const texto = [
         `Arquivo: ${arquivo.name}`,
-        `Conta: ${conta?.nome || nomeContaOfx(extrato)}${conta ? "" : " (nova)"}`,
+        `Conta: ${conta?.nome || nomeContaExtrato(extrato)}${conta ? "" : " (nova)"}`,
         `Período: ${formatData(extrato.periodoInicio)} a ${formatData(extrato.periodoFim)}`,
         extrato.saldoFinal !== null ? `Saldo no extrato: ${formatMoeda(extrato.saldoFinal)} em ${formatData(extrato.saldoData)}` : "",
+        extrato.conferencia ? (extrato.conferencia.esperado === extrato.conferencia.calculado
+            ? "Conferência: saldo inicial + lançamentos = saldo final ✓"
+            : `ATENÇÃO: os lançamentos somam ${formatMoeda(extrato.conferencia.calculado)}, mas o saldo final do arquivo é ${formatMoeda(extrato.conferencia.esperado)}. Confira se o arquivo está completo.`) : "",
         "",
         `${extrato.lancamentos.length} lançamento(s) no arquivo`,
         existentes.size ? `${existentes.size} já importado(s) antes, serão ignorados` : "",
         novos.length ? `${novos.length} novo(s): ${formatMoeda(entradas)} em entradas e ${formatMoeda(saidas)} em saídas` : "Nenhum lançamento novo para importar.",
-    ].filter((linha, indice) => linha || indice === 4).join("\n");
-    if (!(await confirmarImportacaoOfx(texto, novos.length > 0))) return;
+    ].filter((linha, indice) => linha || indice === 5).join("\n");
+    if (!(await confirmarImportacaoExtrato(texto, novos.length > 0))) return;
 
     if (!conta) {
-        const { data, error } = await supabase.from("financeiro_contas").insert({ nome: nomeContaOfx(extrato), banco_id: extrato.bancoId, conta_id: extrato.contaId }).select().single();
+        const { data, error } = await supabase.from("financeiro_contas").insert({ nome: nomeContaExtrato(extrato), banco_id: extrato.bancoId, conta_id: extrato.contaId }).select().single();
         if (error) return setMensagem(error.message, "erro");
         conta = data;
     }

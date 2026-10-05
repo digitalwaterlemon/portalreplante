@@ -770,8 +770,8 @@ button.link-projeto:focus-visible {
     gap: 0.5rem;
 }
 
-.modal-importar-ofx { border-color: var(--verde); }
-.modal-importar-ofx h2 { color: var(--verde-escuro); }
+.modal-importar-extrato { border-color: var(--verde); }
+.modal-importar-extrato h2 { color: var(--verde-escuro); }
 
 .grid-duas-colunas {
     display: grid;
