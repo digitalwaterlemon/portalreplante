@@ -352,6 +352,283 @@ button.secundario {
 }
 
 .alerta-card { border-left-color: var(--vermelho); }
+.negociacao-card { border-left-color: var(--amarelo); }
+
+.metric-card small {
+    display: block;
+    margin-top: 0.2rem;
+    color: var(--muted);
+    font-size: 0.78rem;
+}
+
+/* Analise financeira do painel inicial */
+.analise-financeira {
+    display: grid;
+    gap: 1.2rem;
+    margin-bottom: 1.2rem;
+}
+
+/* Itens de grid nao encolhem abaixo do conteudo sem isso; a tabela larga
+   empurrava a pagina inteira para fora da tela no celular. */
+.analise-financeira > * {
+    min-width: 0;
+}
+
+.analise-financeira h3 {
+    margin: 0 0 0.6rem;
+    font-size: 0.95rem;
+}
+
+.financeiro-kpis {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.7rem;
+}
+
+.kpi {
+    border: 1px solid #edf0f2;
+    border-radius: 8px;
+    padding: 0.75rem 0.85rem;
+    background: #fbfcfb;
+}
+
+.kpi span,
+.kpi small {
+    display: block;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.kpi strong {
+    display: block;
+    margin: 0.2rem 0;
+    font-size: 1.3rem;
+    font-weight: 700;
+}
+
+.kpi-alerta {
+    border-color: var(--vermelho);
+    background: var(--vermelho-claro);
+}
+
+.kpi-alerta strong { color: var(--vermelho); }
+
+.medidor {
+    height: 6px;
+    margin: 0.35rem 0;
+    border-radius: 3px;
+    background: var(--verde-claro);
+    overflow: hidden;
+}
+
+.medidor span {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--verde);
+}
+
+.grafico-colunas {
+    margin: 0;
+    padding-left: 4.2rem;
+}
+
+.grafico-area {
+    position: relative;
+    height: 200px;
+    margin-top: 0.5rem;
+}
+
+.grafico-grade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 1px solid #edf0f2;
+}
+
+.grafico-grade em {
+    position: absolute;
+    right: calc(100% + 0.5rem);
+    top: -0.55rem;
+    font-style: normal;
+    font-size: 0.72rem;
+    color: var(--muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.grafico-colunas-lista,
+.grafico-eixo-x {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.grafico-colunas-lista {
+    position: absolute;
+    inset: 0;
+}
+
+.grafico-coluna {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    height: 100%;
+    outline: none;
+}
+
+.grafico-barra {
+    width: min(24px, 70%);
+    border-radius: 4px 4px 0 0;
+    background: var(--verde);
+}
+
+.grafico-coluna:hover .grafico-barra,
+.grafico-coluna:focus-visible .grafico-barra {
+    background: var(--verde-escuro);
+}
+
+.grafico-rotulo {
+    position: absolute;
+    left: 50%;
+    transform: translate(-50%, -0.3rem);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--texto);
+    white-space: nowrap;
+}
+
+.grafico-tooltip {
+    position: absolute;
+    bottom: calc(100% - 2.5rem);
+    left: 50%;
+    z-index: 2;
+    display: none;
+    transform: translateX(-50%);
+    padding: 0.4rem 0.55rem;
+    border: 1px solid var(--linha);
+    border-radius: 6px;
+    background: white;
+    box-shadow: 0 4px 14px rgba(15, 23, 20, 0.12);
+    font-size: 0.8rem;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.grafico-tooltip strong {
+    display: block;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.grafico-coluna:hover .grafico-tooltip,
+.grafico-coluna:focus-visible .grafico-tooltip {
+    display: block;
+}
+
+.grafico-eixo-x {
+    margin-top: 0.35rem;
+    font-size: 0.72rem;
+    color: var(--muted);
+    text-align: center;
+}
+
+.grafico-tabela {
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+}
+
+.grafico-tabela summary {
+    cursor: pointer;
+    color: var(--muted);
+}
+
+.tabela-rolagem {
+    overflow-x: auto;
+}
+
+.financeiro-tabela table,
+.grafico-tabela table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.86rem;
+}
+
+.financeiro-tabela th,
+.financeiro-tabela td,
+.grafico-tabela th,
+.grafico-tabela td {
+    padding: 0.5rem 0.6rem;
+    border-bottom: 1px solid #edf0f2;
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.financeiro-tabela th:first-child,
+.financeiro-tabela td:first-child,
+.grafico-tabela th:first-child,
+.grafico-tabela td:first-child {
+    text-align: left;
+    white-space: normal;
+}
+
+.financeiro-tabela thead th,
+.grafico-tabela thead th {
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.financeiro-tabela tfoot th {
+    border-bottom: 0;
+    border-top: 2px solid var(--linha);
+}
+
+.financeiro-tabela td:first-child {
+    min-width: 11rem;
+}
+
+.financeiro-tabela td small {
+    display: block;
+    color: var(--muted);
+}
+
+.valor-alerta {
+    color: var(--vermelho);
+    font-weight: 600;
+}
+
+button.link-projeto {
+    display: inline;
+    min-height: auto;
+    padding: 0;
+    background: none;
+    color: var(--texto);
+    font-size: inherit;
+    font-weight: 700;
+    letter-spacing: normal;
+    text-transform: none;
+    text-align: left;
+}
+
+button.link-projeto:hover,
+button.link-projeto:focus-visible {
+    color: var(--verde);
+    text-decoration: underline;
+}
+
+.painel-negociacao {
+    border-top: 4px solid var(--amarelo);
+}
+
+.total-negociacao {
+    display: flex;
+    justify-content: space-between;
+    margin: 0.6rem 0 0;
+    font-size: 0.9rem;
+}
+
+.total-negociacao span { color: var(--muted); }
 
 .grid-duas-colunas {
     display: grid;
@@ -1712,9 +1989,12 @@ th {
     .calendario-grade { grid-template-columns: 1fr; }
     .calendario-semana, .vazio-dia { display: none; }
     .calendario-dia { min-height: auto; border-right: 0; }
+    .financeiro-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 680px) {
+    .grafico-colunas { padding-left: 3.4rem; }
+    .grafico-eixo-x span:nth-child(even) { visibility: hidden; }
     .conteudo { padding: 0.9rem; }
     .topbar, .painel-topo, .card-acoes { align-items: stretch; flex-direction: column; }
     .topbar-direita { justify-content: space-between; }

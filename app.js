@@ -339,34 +339,221 @@ async function render() {
     }
 }
 
+// Prospeccao e orcamento ainda nao sao contrato: ficam fora da analise financeira.
+const STATUS_NEGOCIACAO = ["prospeccao", "orcamento"];
+const STATUS_CONTRATO_ATIVO = ["contratado", "em_execucao", "monitoramento", "pausado"];
+
+// valor_estimado do projeto e texto livre ("45000", "R$ 45.000", "45.000,50").
+function valorNumero(texto) {
+    let limpo = String(texto ?? "").replace(/[^\d,.-]/g, "");
+    if (limpo.includes(",")) limpo = limpo.replaceAll(".", "").replace(",", ".");
+    else if (/^\d{1,3}(\.\d{3})+$/.test(limpo)) limpo = limpo.replaceAll(".", "");
+    const numero = Number(limpo);
+    return Number.isFinite(numero) ? numero : 0;
+}
+
+function rotuloStatusProjeto(status) {
+    return PROJETO_STATUS.find(([valor]) => valor === status)?.[1] || formatStatus(status);
+}
+
+function formatMoedaCompacta(valor) {
+    const numero = Number(valor || 0);
+    if (Math.abs(numero) >= 1000000) return `R$ ${(numero / 1000000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mi`;
+    if (Math.abs(numero) >= 1000) return `R$ ${(numero / 1000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })} mil`;
+    return formatMoeda(numero);
+}
+
+function formatPercentual(valor) {
+    return `${(valor * 100).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}%`;
+}
+
+const MESES_CURTOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+// Receita vem do cronograma (valor_receber das intervencoes nao canceladas dos
+// projetos contratados); gastos sao lancamentos + insumos rateados. Uma parcela
+// esta "em atraso" quando a intervencao foi executada ou a data ja passou e
+// ainda nao ha "Recebido em".
+function analiseFinanceira() {
+    const hoje = dataIsoLocal(new Date());
+    const contratos = cache.projetos.filter((p) => !STATUS_NEGOCIACAO.includes(p.status));
+    const gastoPorIntervencao = new Map();
+    const somarGasto = (intervencaoId, valor) => gastoPorIntervencao.set(intervencaoId, (gastoPorIntervencao.get(intervencaoId) || 0) + Number(valor || 0));
+    cache.lancamentos.filter((l) => l.tipo === "gasto").forEach((l) => somarGasto(l.intervencao_id, l.valor));
+    cache.insumosUsados.forEach((i) => somarGasto(i.intervencao_id, i.valor_rateado));
+
+    const inicioMes = new Date();
+    inicioMes.setDate(1);
+    const meses = Array.from({ length: 12 }, (_, indice) => {
+        const data = new Date(inicioMes.getFullYear(), inicioMes.getMonth() + indice, 1);
+        return { chave: dataIsoLocal(data).slice(0, 7), rotulo: `${MESES_CURTOS[data.getMonth()]}/${String(data.getFullYear()).slice(2)}`, valor: 0 };
+    });
+    const mesPorChave = new Map(meses.map((mes) => [mes.chave, mes]));
+
+    const total = { contratado: 0, recebido: 0, aReceber: 0, atrasado: 0, gastos: 0, semData: 0, depoisDoPeriodo: 0 };
+    const atrasados = [];
+    const porProjeto = contratos.map((projeto) => {
+        const linha = { projeto, contratado: 0, recebido: 0, aReceber: 0, atrasado: 0, gastos: 0 };
+        for (const intervencao of cache.intervencoes.filter((i) => i.projeto_id === projeto.id)) {
+            linha.gastos += gastoPorIntervencao.get(intervencao.id) || 0;
+            if (intervencao.status === "cancelada") continue;
+            const valor = Number(intervencao.valor_receber || 0);
+            if (!valor) continue;
+            linha.contratado += valor;
+            if (intervencao.recebido_em) {
+                linha.recebido += valor;
+                continue;
+            }
+            const vencimento = intervencao.data_fim || intervencao.data_prevista;
+            if (intervencao.status === "executada" || (vencimento && vencimento < hoje)) {
+                linha.atrasado += valor;
+                atrasados.push({ intervencao, projeto, valor });
+                continue;
+            }
+            linha.aReceber += valor;
+            // Agrupa pelo termino do servico (mesma data que define o atraso).
+            const mes = vencimento ? mesPorChave.get(vencimento.slice(0, 7)) : null;
+            if (mes) mes.valor += valor;
+            else if (vencimento) total.depoisDoPeriodo += valor;
+            else total.semData += valor;
+        }
+        for (const chave of ["contratado", "recebido", "aReceber", "atrasado", "gastos"]) total[chave] += linha[chave];
+        linha.resultado = linha.contratado - linha.gastos;
+        linha.margem = linha.contratado ? linha.resultado / linha.contratado : null;
+        return linha;
+    });
+    total.resultado = total.contratado - total.gastos;
+    total.margem = total.contratado ? total.resultado / total.contratado : null;
+    atrasados.sort((a, b) => String(a.intervencao.data_prevista).localeCompare(String(b.intervencao.data_prevista)));
+    porProjeto.sort((a, b) => b.contratado - a.contratado);
+    return { total, porProjeto, meses, atrasados };
+}
+
+function renderGraficoRecebimentos(meses) {
+    const maximo = Math.max(...meses.map((mes) => mes.valor));
+    if (!maximo) return `<p class="vazio compacto">Nenhum recebimento previsto para os próximos 12 meses.</p>`;
+    const passo = [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000].find((p) => maximo / p <= 4) || 1000000;
+    const topo = Math.ceil(maximo / passo) * passo;
+    const ticks = Array.from({ length: Math.round(topo / passo) + 1 }, (_, indice) => indice * passo);
+    const maiorMes = meses.find((mes) => mes.valor === maximo);
+    return `
+        <figure class="grafico-colunas" aria-label="Recebimentos previstos por mês">
+            <div class="grafico-area">
+                ${ticks.map((tick) => `<span class="grafico-grade" style="bottom:${(tick / topo) * 100}%"><em>${escapeHtml(formatMoedaCompacta(tick))}</em></span>`).join("")}
+                <div class="grafico-colunas-lista">
+                    ${meses.map((mes) => `
+                        <div class="grafico-coluna" tabindex="0" aria-label="${escapeHtml(`${mes.rotulo}: ${formatMoeda(mes.valor)}`)}">
+                            ${mes.valor ? `<span class="grafico-barra" style="height:${(mes.valor / topo) * 100}%"></span>` : ""}
+                            ${mes === maiorMes ? `<b class="grafico-rotulo" style="bottom:${(mes.valor / topo) * 100}%">${escapeHtml(formatMoedaCompacta(mes.valor))}</b>` : ""}
+                            <span class="grafico-tooltip" role="tooltip"><strong>${escapeHtml(mes.rotulo)}</strong>${escapeHtml(formatMoeda(mes.valor))}</span>
+                        </div>
+                    `).join("")}
+                </div>
+            </div>
+            <div class="grafico-eixo-x">${meses.map((mes) => `<span>${escapeHtml(mes.rotulo)}</span>`).join("")}</div>
+        </figure>
+        <details class="grafico-tabela">
+            <summary>Ver valores em tabela</summary>
+            <table>
+                <thead><tr><th>Mês</th><th>A receber</th></tr></thead>
+                <tbody>${meses.map((mes) => `<tr><td>${escapeHtml(mes.rotulo)}</td><td>${formatMoeda(mes.valor)}</td></tr>`).join("")}</tbody>
+            </table>
+        </details>
+    `;
+}
+
+function renderAnaliseFinanceira(financeiro) {
+    const { total, porProjeto, meses } = financeiro;
+    const percentualRecebido = total.contratado ? total.recebido / total.contratado : 0;
+    const notasPrevisao = [
+        total.atrasado ? `${formatMoeda(total.atrasado)} em atraso não entram no gráfico` : "",
+        total.depoisDoPeriodo ? `${formatMoeda(total.depoisDoPeriodo)} previstos depois de ${meses.at(-1).rotulo}` : "",
+        total.semData ? `${formatMoeda(total.semData)} sem data definida` : "",
+    ].filter(Boolean);
+    return `
+        <section class="painel analise-financeira">
+            <div class="painel-topo">
+                <div><h2>Análise financeira dos contratos</h2><p class="subtexto">Receita pelo cronograma de plantios e manutenções; prospecção e orçamento ficam fora.</p></div>
+            </div>
+            <div class="financeiro-kpis">
+                <div class="kpi"><span>Valor contratado</span><strong>${formatMoeda(total.contratado)}</strong><small>${porProjeto.length} contrato(s)</small></div>
+                <div class="kpi"><span>Recebido</span><strong>${formatMoeda(total.recebido)}</strong>
+                    <div class="medidor" role="img" aria-label="${escapeHtml(`${formatPercentual(percentualRecebido)} do contratado`)}"><span style="width:${Math.min(percentualRecebido, 1) * 100}%"></span></div>
+                    <small>${formatPercentual(percentualRecebido)} do contratado</small></div>
+                <div class="kpi"><span>A receber</span><strong>${formatMoeda(total.aReceber)}</strong><small>parcelas futuras</small></div>
+                <div class="kpi ${total.atrasado ? "kpi-alerta" : ""}"><span>Em atraso</span><strong>${formatMoeda(total.atrasado)}</strong><small>${total.atrasado ? `${financeiro.atrasados.length} parcela(s) sem recebimento` : "nenhuma parcela vencida"}</small></div>
+                <div class="kpi"><span>Gastos lançados</span><strong>${formatMoeda(total.gastos)}</strong><small>gastos + insumos rateados</small></div>
+                <div class="kpi"><span>Resultado previsto</span><strong>${formatMoeda(total.resultado)}</strong><small>${total.margem === null ? "sem valores contratados" : `margem de ${formatPercentual(total.margem)}`}</small></div>
+            </div>
+            <div class="financeiro-previsao">
+                <h3>Recebimentos previstos nos próximos 12 meses</h3>
+                ${renderGraficoRecebimentos(meses)}
+                ${notasPrevisao.length ? `<p class="subtexto">${escapeHtml(notasPrevisao.join(" · "))}.</p>` : ""}
+            </div>
+            <div class="financeiro-tabela">
+                <h3>Por contrato</h3>
+                <div class="tabela-rolagem">
+                    <table>
+                        <thead><tr><th>Projeto</th><th>Contratado</th><th>Recebido</th><th>A receber</th><th>Em atraso</th><th>Gastos</th><th>Resultado</th><th>Margem</th></tr></thead>
+                        <tbody>
+                            ${porProjeto.map((linha) => `
+                                <tr>
+                                    <td><button class="link-projeto abrir-projeto-dashboard" type="button" data-id="${linha.projeto.id}">${escapeHtml(linha.projeto.nome)}</button><small>${escapeHtml(rotuloStatusProjeto(linha.projeto.status))}</small></td>
+                                    <td>${formatMoeda(linha.contratado)}</td>
+                                    <td>${formatMoeda(linha.recebido)}</td>
+                                    <td>${formatMoeda(linha.aReceber)}</td>
+                                    <td class="${linha.atrasado ? "valor-alerta" : ""}">${formatMoeda(linha.atrasado)}</td>
+                                    <td>${formatMoeda(linha.gastos)}</td>
+                                    <td class="${linha.resultado < 0 ? "valor-alerta" : ""}">${formatMoeda(linha.resultado)}</td>
+                                    <td>${linha.margem === null ? "—" : formatPercentual(linha.margem)}</td>
+                                </tr>
+                            `).join("")}
+                        </tbody>
+                        <tfoot><tr><th>Total</th><th>${formatMoeda(total.contratado)}</th><th>${formatMoeda(total.recebido)}</th><th>${formatMoeda(total.aReceber)}</th><th>${formatMoeda(total.atrasado)}</th><th>${formatMoeda(total.gastos)}</th><th>${formatMoeda(total.resultado)}</th><th>${total.margem === null ? "—" : formatPercentual(total.margem)}</th></tr></tfoot>
+                    </table>
+                </div>
+                ${porProjeto.some((linha) => !linha.contratado) ? `<p class="subtexto">Contratos com valor contratado zerado ainda não têm valores a receber nos plantios e manutenções.</p>` : ""}
+            </div>
+        </section>
+    `;
+}
+
 function renderDashboard() {
     setPage("Início", "Visão geral", `<a class="botao" href="#projetos">Projetos</a><a class="botao secundario" href="#calendario">Calendário</a>`);
 
-    const projetosAtivos = cache.projetos.filter((p) => p.status !== "concluido");
-    const projetosExecucao = cache.projetos.filter((p) => ["contratado", "em_execucao", "monitoramento"].includes(p.status));
-    const intervencoesPendentes = intervencoesProjetosAtivos().filter((i) => !["executada", "cancelada"].includes(i.status));
+    const contratosAtivos = cache.projetos.filter((p) => STATUS_CONTRATO_ATIVO.includes(p.status));
+    const emNegociacao = cache.projetos.filter((p) => STATUS_NEGOCIACAO.includes(p.status));
+    const valorNegociacao = emNegociacao.reduce((soma, p) => soma + valorNumero(p.valor_estimado), 0);
+    const financeiro = analiseFinanceira();
+    const intervencoesPendentes = intervencoesProjetosAtivos().filter((i) => !["executada", "cancelada"].includes(i.status) && !STATUS_NEGOCIACAO.includes(buscarProjeto(i.projeto_id)?.status));
     const licitacoesAtivas = cache.oportunidades.filter((o) => !["perdido", "descartado"].includes(o.status));
     const licitacoesRelevantes = licitacoesAtivas.filter((o) => ["alta", "media"].includes(o.prioridade_prad));
     const licitacoesAlta = licitacoesAtivas.filter((o) => o.prioridade_prad === "alta");
     const alertasConfirmacao = alertasConfirmacaoManutencao();
-    const projetosRecentes = cache.projetos.slice(0, 5);
     const licitacoesRecentes = [...licitacoesRelevantes]
         .sort((a, b) => (b.pontuacao_prad || 0) - (a.pontuacao_prad || 0))
         .slice(0, 5);
 
     conteudo.innerHTML = `
         <section class="metricas">
-            <div class="metric-card"><span>Projetos ativos</span><strong>${projetosAtivos.length}</strong></div>
-            <div class="metric-card"><span>Em execução</span><strong>${projetosExecucao.length}</strong></div>
-            <div class="metric-card"><span>Intervenções abertas</span><strong>${intervencoesPendentes.length}</strong></div>
-            <div class="metric-card alerta-card"><span>Alta prioridade</span><strong>${licitacoesAlta.length}</strong></div>
+            <div class="metric-card"><span>Contratos ativos</span><strong>${contratosAtivos.length}</strong><small>contratado, em execução, monitoramento ou pausado</small></div>
+            <div class="metric-card negociacao-card"><span>Em negociação</span><strong>${emNegociacao.length}</strong><small>${formatMoeda(valorNegociacao)} estimados · ainda sem contrato</small></div>
+            <div class="metric-card"><span>Intervenções abertas</span><strong>${intervencoesPendentes.length}</strong><small>dos contratos</small></div>
+            <div class="metric-card alerta-card"><span>Licitações alta prioridade</span><strong>${licitacoesAlta.length}</strong></div>
         </section>
+        ${renderAnaliseFinanceira(financeiro)}
         <section class="grid-duas-colunas">
-            <div class="painel">
-                <div class="painel-topo"><h2>Projetos recentes</h2><a href="#projetos">Ver todos</a></div>
-                ${projetosRecentes.length ? `<div class="lista-compacta">${projetosRecentes.map((p) => `
-                    <article><div><strong>${escapeHtml(p.nome)}</strong><span>${escapeHtml(p.cliente || "Cliente nao informado")} · ${escapeHtml(p.local || "Local nao informado")}</span></div><em>${escapeHtml(formatStatus(p.status))}</em></article>
-                `).join("")}</div>` : `<p class="vazio compacto">Nenhum projeto cadastrado ainda.</p>`}
+            <div class="painel painel-negociacao">
+                <div class="painel-topo"><div><h2>Em negociação</h2><p class="subtexto">Prospecção e orçamento: ainda não são contratos ativos.</p></div><a href="#projetos?status=todos">Ver projetos</a></div>
+                ${emNegociacao.length ? `<div class="lista-compacta">${emNegociacao.map((p) => `
+                    <article><div><button class="link-projeto abrir-projeto-dashboard" type="button" data-id="${p.id}">${escapeHtml(p.nome)}</button><span>${escapeHtml(p.cliente || "Cliente não informado")} · ${escapeHtml(rotuloStatusProjeto(p.status))}</span></div><em>${valorNumero(p.valor_estimado) ? formatMoeda(valorNumero(p.valor_estimado)) : "Sem valor estimado"}</em></article>
+                `).join("")}</div>
+                <p class="total-negociacao"><span>Total estimado</span><strong>${formatMoeda(valorNegociacao)}</strong></p>` : `<p class="vazio compacto">Nenhum projeto em prospecção ou orçamento.</p>`}
+            </div>
+            <div class="painel ${financeiro.atrasados.length ? "painel-alertas" : ""}">
+                <div class="painel-topo"><div><h2>Recebimentos em atraso</h2><p class="subtexto">Executados ou com data passada, sem "Recebido em".</p></div></div>
+                ${financeiro.atrasados.length ? `<div class="lista-compacta">${financeiro.atrasados.map(({ intervencao, projeto, valor }) => `
+                    <article><div><button class="link-projeto abrir-projeto-dashboard" type="button" data-id="${projeto.id}" data-intervencao-id="${intervencao.id}">${escapeHtml(intervencao.titulo)}</button><span>${escapeHtml(projeto.nome)} · ${escapeHtml(formatPeriodo(intervencao))} · ${escapeHtml(formatStatus(intervencao.status))}</span></div><em>${formatMoeda(valor)}</em></article>
+                `).join("")}</div>` : `<p class="vazio compacto">Nenhum recebimento em atraso.</p>`}
             </div>
             <div class="painel">
                 <div class="painel-topo"><h2>Licitações em foco</h2><a href="#licitacoes">Ver radar</a></div>
@@ -381,7 +568,14 @@ function renderDashboard() {
                 `).join("")}</div>` : `<p class="vazio compacto">Nenhum contato com cliente pendente para hoje.</p>`}
             </div>
         </section>
+        <dialog id="projetoModal" class="modal-projeto">
+            <div id="projetoModalConteudo"></div>
+        </dialog>
     `;
+    document.querySelectorAll(".abrir-projeto-dashboard").forEach((botao) => {
+        botao.addEventListener("click", () => abrirProjetoModal(Number(botao.dataset.id), botao.dataset.intervencaoId ? Number(botao.dataset.intervencaoId) : null));
+    });
+    if (projetoModalAbertoId) setTimeout(() => abrirProjetoModal(projetoModalAbertoId, intervencaoModalDestaqueId), 0);
 }
 
 function renderProjetos() {
@@ -601,7 +795,12 @@ function abrirProjetoModal(id, intervencaoId = null) {
     intervencaoModalDestaqueId = intervencaoId;
     modalConteudo.innerHTML = renderProjetoDetalhe(projeto);
     bindProjetoDetalhe(modalConteudo);
-    modal.showModal();
+    // Esc tambem fecha o dialog; sem isso o modal reabriria no proximo render.
+    modal.onclose = () => {
+        projetoModalAbertoId = null;
+        intervencaoModalDestaqueId = null;
+    };
+    if (!modal.open) modal.showModal();
     if (intervencaoId) {
         const alvo = modalConteudo.querySelector(`[data-intervencao-card="${intervencaoId}"]`);
         alvo?.scrollIntoView({ block: "center", behavior: "smooth" });
