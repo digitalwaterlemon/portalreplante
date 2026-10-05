@@ -1,5 +1,6 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 import { safeExternalUrl } from "./url_safety.js";
+import { decodificarOfx, lerOfx } from "./ofx.js";
 
 const config = window.PORTAL_CONFIG || {};
 const supabase = createClient(config.SUPABASE_URL || "", config.SUPABASE_ANON_KEY || "");
@@ -274,7 +275,7 @@ function opcoesTexto(opcoes, atual) {
 }
 
 async function carregarDados() {
-    const [fontes, oportunidades, projetos, regras, intervencoes, atividades, lancamentos, insumosUsados, insumos, opcoes, historico, propostas, propostaItens, projetoLinks, prospeccaoContatos, configuracoesAlertas] = await Promise.all([
+    const [fontes, oportunidades, projetos, regras, intervencoes, atividades, lancamentos, insumosUsados, insumos, opcoes, historico, propostas, propostaItens, projetoLinks, prospeccaoContatos, configuracoesAlertas, financeiroContas, financeiroCategorias, financeiroImportacoes] = await Promise.all([
         supabase.from("fontes").select("*").order("nome"),
         supabase.from("oportunidades").select("*, fontes(nome)").order("data_encontrado", { ascending: false }),
         supabase.from("projetos").select("*").order("atualizado_em", { ascending: false }),
@@ -291,9 +292,12 @@ async function carregarDados() {
         supabase.from("projeto_links").select("*").order("id", { ascending: false }),
         supabase.from("prospeccao_contatos").select("*").order("atualizado_em", { ascending: false }),
         supabase.from("configuracoes_alertas").select("*").order("chave"),
+        supabase.from("financeiro_contas").select("*").order("id"),
+        supabase.from("financeiro_categorias").select("*").order("ordem").order("nome"),
+        supabase.from("financeiro_importacoes").select("*").order("criado_em", { ascending: false }),
     ]);
 
-    for (const result of [fontes, oportunidades, projetos, regras, intervencoes, atividades, lancamentos, insumosUsados, insumos, opcoes, historico, propostas, propostaItens, projetoLinks, prospeccaoContatos, configuracoesAlertas]) {
+    for (const result of [fontes, oportunidades, projetos, regras, intervencoes, atividades, lancamentos, insumosUsados, insumos, opcoes, historico, propostas, propostaItens, projetoLinks, prospeccaoContatos, configuracoesAlertas, financeiroContas, financeiroCategorias, financeiroImportacoes]) {
         if (result.error) throw result.error;
     }
 
@@ -317,6 +321,9 @@ async function carregarDados() {
     cache.projetoLinks = projetoLinks.data || [];
     cache.prospeccaoContatos = prospeccaoContatos.data || [];
     cache.configuracoesAlertas = configuracoesAlertas.data || [];
+    cache.financeiroContas = financeiroContas.data || [];
+    cache.financeiroCategorias = financeiroCategorias.data || [];
+    cache.financeiroImportacoes = financeiroImportacoes.data || [];
 }
 
 async function render() {
@@ -331,6 +338,7 @@ async function render() {
         else if (rota === "licitacoes") renderLicitacoes();
         else if (rota === "regras") renderRegras();
         else if (rota === "configuracoes") renderConfiguracoes();
+        else if (rota === "financeiro") await renderFinanceiro();
         else renderDashboard();
     } catch (error) {
         console.error(error);
@@ -1130,6 +1138,23 @@ const CONFIRMACOES_EXCLUSAO = {
 
 const PALAVRA_EXCLUSAO = "EXCLUIR";
 
+// Dialogos de confirmacao: a resposta sai do clique no botao; o evento "close"
+// (Esc) so cancela. Nao depender apenas de "close" evita respostas perdidas
+// quando o navegador adia esse evento (aba em segundo plano).
+function abrirDialogo(modal) {
+    modal.showModal();
+    return new Promise((resolve) => {
+        modal.resolverDialogo = resolve;
+    });
+}
+
+function responderDialogo(modal, resposta) {
+    const resolver = modal.resolverDialogo;
+    modal.resolverDialogo = null;
+    if (modal.open) modal.close();
+    resolver?.(resposta);
+}
+
 // Modal de confirmacao reutilizavel: so libera a exclusao ao digitar EXCLUIR.
 function confirmarExclusao(mensagem) {
     let modal = $("#confirmarExclusaoModal");
@@ -1138,7 +1163,7 @@ function confirmarExclusao(mensagem) {
         modal.id = "confirmarExclusaoModal";
         modal.className = "modal-confirmar-exclusao";
         modal.innerHTML = `
-            <form method="dialog">
+            <form>
                 <h2>Confirmar exclusão</h2>
                 <p class="confirmar-exclusao-mensagem"></p>
                 <label>Para confirmar, digite <strong>${PALAVRA_EXCLUSAO}</strong>
@@ -1152,23 +1177,24 @@ function confirmarExclusao(mensagem) {
         `;
         document.body.append(modal);
         const form = modal.querySelector("form");
+        const confirmado = () => form.confirmacao.value.trim() === PALAVRA_EXCLUSAO;
         form.confirmacao.addEventListener("input", () => {
-            form.querySelector('[value="excluir"]').disabled = form.confirmacao.value.trim() !== PALAVRA_EXCLUSAO;
+            form.querySelector('[value="excluir"]').disabled = !confirmado();
         });
-        form.querySelector('[value="cancelar"]').addEventListener("click", () => modal.close("cancelar"));
+        form.addEventListener("submit", (event) => {
+            event.preventDefault();
+            if (confirmado()) responderDialogo(modal, true);
+        });
+        form.querySelector('[value="cancelar"]').addEventListener("click", () => responderDialogo(modal, false));
+        modal.addEventListener("close", () => responderDialogo(modal, false));
     }
     const form = modal.querySelector("form");
     modal.querySelector(".confirmar-exclusao-mensagem").textContent = `${mensagem}\n\nEsta ação não pode ser desfeita.`;
     form.reset();
     form.querySelector('[value="excluir"]').disabled = true;
-    modal.returnValue = "";
-    modal.showModal();
+    const resposta = abrirDialogo(modal);
     form.confirmacao.focus();
-    return new Promise((resolve) => {
-        modal.addEventListener("close", () => {
-            resolve(modal.returnValue === "excluir" && form.confirmacao.value.trim() === PALAVRA_EXCLUSAO);
-        }, { once: true });
-    });
+    return resposta;
 }
 
 async function excluirRegistro(event) {
@@ -2155,6 +2181,519 @@ async function salvarRegras(event) {
         if (error) return setMensagem(error.message, "erro");
     }
     setMensagem("Regras salvas.");
+    await render();
+}
+
+// ---------------------------------------------------------------------------
+// Financeiro: extrato bancario (OFX) classificado por categoria e destino
+// (projeto, corporativo ou transferencia entre contas proprias).
+
+let financeiroLancamentos = [];
+let financeiroSelecionados = new Set();
+let financeiroMensagemPendente = null;
+
+const DESTINOS_FINANCEIRO = {
+    projeto: "Projeto",
+    corporativo: "Corporativo",
+    transferencia: "Transferência entre contas",
+};
+
+function filtrosFinanceiro() {
+    const params = new URLSearchParams(location.hash.split("?")[1] || "");
+    const hoje = new Date();
+    return {
+        de: params.get("de") || dataIsoLocal(new Date(hoje.getFullYear(), hoje.getMonth() - 2, 1)),
+        ate: params.get("ate") || dataIsoLocal(hoje),
+        tipo: params.get("tipo") || "todos",
+        categoria: params.get("categoria") || "",
+        destino: params.get("destino") || "",
+        busca: params.get("busca") || "",
+    };
+}
+
+// O Supabase devolve no maximo 1000 linhas por consulta.
+async function buscarLancamentosFinanceiro(de, ate) {
+    const linhas = [];
+    for (let inicio = 0; ; inicio += 1000) {
+        const { data, error } = await supabase
+            .from("financeiro_lancamentos")
+            .select("*")
+            .gte("data", de)
+            .lte("data", ate)
+            .order("data", { ascending: false })
+            .order("id", { ascending: false })
+            .range(inicio, inicio + 999);
+        if (error) throw error;
+        linhas.push(...data);
+        if (data.length < 1000) return linhas;
+    }
+}
+
+function lancamentoPendente(lancamento) {
+    return !lancamento.categoria_id || !lancamento.destino || (lancamento.destino === "projeto" && !lancamento.projeto_id);
+}
+
+function categoriaFinanceira(id) {
+    return cache.financeiroCategorias.find((categoria) => categoria.id === id);
+}
+
+function categoriaCompativel(categoria, valor) {
+    return categoria.tipo === "ambos" || categoria.tipo === (Number(valor) >= 0 ? "receita" : "despesa");
+}
+
+function valorDestinoLancamento(lancamento) {
+    if (lancamento.destino === "projeto") return lancamento.projeto_id ? `projeto:${lancamento.projeto_id}` : "";
+    return lancamento.destino || "";
+}
+
+function payloadDestino(valor) {
+    if (valor.startsWith("projeto:")) return { destino: "projeto", projeto_id: Number(valor.split(":")[1]) };
+    if (valor === "corporativo" || valor === "transferencia") return { destino: valor, projeto_id: null };
+    return { destino: null, projeto_id: null };
+}
+
+function nomeDestinoLancamento(lancamento) {
+    if (lancamento.destino === "projeto" && lancamento.projeto_id) return buscarProjeto(lancamento.projeto_id)?.nome || "Projeto removido";
+    return DESTINOS_FINANCEIRO[lancamento.destino] || "A classificar";
+}
+
+function opcoesCategoriaFinanceiro(valor, atual) {
+    const categorias = cache.financeiroCategorias.filter((categoria) => categoriaCompativel(categoria, valor) && (categoria.ativo || categoria.id === atual));
+    return `<option value="">A classificar</option>${categorias.map((categoria) => `<option value="${categoria.id}" ${categoria.id === atual ? "selected" : ""}>${escapeHtml(categoria.nome)}</option>`).join("")}`;
+}
+
+function opcoesProjetosFinanceiro(atual) {
+    const projetos = [...cache.projetos].sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+    const atualId = atual.startsWith("projeto:") ? Number(atual.split(":")[1]) : null;
+    const arquivado = atualId && !projetos.some((p) => p.id === atualId) ? buscarProjeto(atualId) : null;
+    if (arquivado) projetos.push({ ...arquivado, nome: `${arquivado.nome} (arquivado)` });
+    return `<optgroup label="Projetos">${projetos.map((p) => `<option value="projeto:${p.id}" ${`projeto:${p.id}` === atual ? "selected" : ""}>${escapeHtml(p.nome)}</option>`).join("")}</optgroup>`;
+}
+
+function opcoesDestinoFinanceiro(atual) {
+    return `
+        <option value="">A classificar</option>
+        <option value="corporativo" ${atual === "corporativo" ? "selected" : ""}>Corporativo</option>
+        <option value="transferencia" ${atual === "transferencia" ? "selected" : ""}>Transferência entre contas</option>
+        ${opcoesProjetosFinanceiro(atual)}
+    `;
+}
+
+function filtrarLancamentosFinanceiro(lista, filtros) {
+    const termo = filtros.busca.toLowerCase();
+    return lista.filter((lancamento) => {
+        if (filtros.tipo === "entradas" && lancamento.valor < 0) return false;
+        if (filtros.tipo === "saidas" && lancamento.valor >= 0) return false;
+        if (filtros.categoria === "sem" && lancamento.categoria_id) return false;
+        if (filtros.categoria && filtros.categoria !== "sem" && lancamento.categoria_id !== Number(filtros.categoria)) return false;
+        if (filtros.destino === "pendente" && !lancamentoPendente(lancamento)) return false;
+        if (filtros.destino === "projetos" && lancamento.destino !== "projeto") return false;
+        if (["corporativo", "transferencia"].includes(filtros.destino) && lancamento.destino !== filtros.destino) return false;
+        if (filtros.destino.startsWith("projeto:") && valorDestinoLancamento(lancamento) !== filtros.destino) return false;
+        if (termo && !`${lancamento.descricao} ${lancamento.observacao || ""}`.toLowerCase().includes(termo)) return false;
+        return true;
+    });
+}
+
+// Transferencias entre contas proprias nao sao receita nem despesa.
+function resumoFinanceiro(lista) {
+    const resumo = { entradas: 0, saidas: 0, transferencias: 0, pendentes: 0, porCategoria: new Map(), porDestino: new Map() };
+    for (const lancamento of lista) {
+        const valor = Number(lancamento.valor);
+        if (lancamentoPendente(lancamento)) resumo.pendentes += 1;
+        if (lancamento.destino === "transferencia") {
+            resumo.transferencias += valor;
+            continue;
+        }
+        if (valor >= 0) resumo.entradas += valor;
+        else resumo.saidas += -valor;
+        for (const [mapa, chave] of [[resumo.porCategoria, categoriaFinanceira(lancamento.categoria_id)?.nome || "Sem categoria"], [resumo.porDestino, nomeDestinoLancamento(lancamento)]]) {
+            const linha = mapa.get(chave) || { nome: chave, entradas: 0, saidas: 0 };
+            if (valor >= 0) linha.entradas += valor;
+            else linha.saidas += -valor;
+            mapa.set(chave, linha);
+        }
+    }
+    resumo.resultado = resumo.entradas - resumo.saidas;
+    return resumo;
+}
+
+function saldoContasFinanceiro() {
+    return cache.financeiroContas.map((conta) => {
+        const importacao = cache.financeiroImportacoes
+            .filter((item) => item.conta_id === conta.id && item.saldo_final !== null && item.saldo_data)
+            .sort((a, b) => b.saldo_data.localeCompare(a.saldo_data))[0];
+        return { conta, importacao };
+    });
+}
+
+function renderTabelaResumoFinanceiro(titulo, coluna, mapa) {
+    const linhas = [...mapa.values()].sort((a, b) => (b.entradas + b.saidas) - (a.entradas + a.saidas));
+    return `
+        <div>
+            <h3>${escapeHtml(titulo)}</h3>
+            ${linhas.length ? `<table class="tabela-financeiro-resumo">
+                <thead><tr><th>${escapeHtml(coluna)}</th><th>Entradas</th><th>Saídas</th><th>Resultado</th></tr></thead>
+                <tbody>${linhas.map((linha) => `<tr><td>${escapeHtml(linha.nome)}</td><td>${formatMoeda(linha.entradas)}</td><td>${formatMoeda(linha.saidas)}</td><td class="${linha.entradas - linha.saidas < 0 ? "valor-alerta" : ""}">${formatMoeda(linha.entradas - linha.saidas)}</td></tr>`).join("")}</tbody>
+            </table>` : `<p class="vazio compacto">Sem lançamentos no filtro.</p>`}
+        </div>
+    `;
+}
+
+async function renderFinanceiro() {
+    const filtros = filtrosFinanceiro();
+    financeiroLancamentos = await buscarLancamentosFinanceiro(filtros.de, filtros.ate);
+    financeiroSelecionados = new Set();
+    desenharFinanceiro();
+}
+
+function desenharFinanceiro() {
+    const rolagem = window.scrollY;
+    const filtros = filtrosFinanceiro();
+    const lista = filtrarLancamentosFinanceiro(financeiroLancamentos, filtros);
+    const resumo = resumoFinanceiro(lista);
+    const saldos = saldoContasFinanceiro();
+    financeiroSelecionados = new Set([...financeiroSelecionados].filter((id) => lista.some((l) => l.id === id)));
+    const todosSelecionados = lista.length > 0 && lista.every((l) => financeiroSelecionados.has(l.id));
+    const categoriasAtivas = cache.financeiroCategorias.filter((categoria) => categoria.ativo);
+    const rotuloTipoCategoria = { receita: "Receitas", despesa: "Despesas", ambos: "Receitas e despesas" };
+
+    setPage("Financeiro", "Extrato bancário", `<label class="botao" for="arquivoOfx">Importar extrato OFX</label>`);
+    conteudo.innerHTML = `
+        <input id="arquivoOfx" type="file" accept=".ofx,.OFX" hidden>
+        <section class="financeiro-kpis financeiro-topo">
+            ${saldos.length ? saldos.map(({ conta, importacao }) => `<div class="kpi"><span>Saldo · ${escapeHtml(conta.nome)}</span><strong>${importacao ? formatMoeda(importacao.saldo_final) : "—"}</strong><small>${importacao ? `em ${escapeHtml(formatData(importacao.saldo_data))}, pelo último extrato` : "sem saldo no extrato"}</small></div>`).join("")
+                : `<div class="kpi"><span>Saldo</span><strong>—</strong><small>importe o primeiro extrato OFX</small></div>`}
+            <div class="kpi"><span>Entradas no filtro</span><strong>${formatMoeda(resumo.entradas)}</strong><small>sem transferências entre contas</small></div>
+            <div class="kpi"><span>Saídas no filtro</span><strong>${formatMoeda(resumo.saidas)}</strong><small>sem transferências entre contas</small></div>
+            <div class="kpi"><span>Resultado</span><strong class="${resumo.resultado < 0 ? "valor-alerta" : ""}">${formatMoeda(resumo.resultado)}</strong><small>entradas − saídas</small></div>
+            <div class="kpi ${resumo.pendentes ? "kpi-alerta" : ""}"><span>A classificar</span><strong>${resumo.pendentes}</strong><small>${resumo.pendentes ? `<a href="#financeiro?${new URLSearchParams({ ...filtros, destino: "pendente" }).toString()}">ver só os pendentes</a>` : "tudo classificado"}</small></div>
+        </section>
+        <form id="filtroFinanceiro" class="filtros filtros-financeiro">
+            <label>De<input name="de" type="date" value="${escapeHtml(filtros.de)}"></label>
+            <label>Até<input name="ate" type="date" value="${escapeHtml(filtros.ate)}"></label>
+            <label>Tipo<select name="tipo">
+                <option value="todos">Entradas e saídas</option>
+                <option value="entradas" ${filtros.tipo === "entradas" ? "selected" : ""}>Só entradas</option>
+                <option value="saidas" ${filtros.tipo === "saidas" ? "selected" : ""}>Só saídas</option>
+            </select></label>
+            <label>Categoria<select name="categoria">
+                <option value="">Todas</option>
+                <option value="sem" ${filtros.categoria === "sem" ? "selected" : ""}>Sem categoria</option>
+                ${cache.financeiroCategorias.map((categoria) => `<option value="${categoria.id}" ${String(categoria.id) === filtros.categoria ? "selected" : ""}>${escapeHtml(categoria.nome)}</option>`).join("")}
+            </select></label>
+            <label>Destino<select name="destino">
+                <option value="">Todos</option>
+                <option value="pendente" ${filtros.destino === "pendente" ? "selected" : ""}>A classificar</option>
+                <option value="projetos" ${filtros.destino === "projetos" ? "selected" : ""}>Qualquer projeto</option>
+                <option value="corporativo" ${filtros.destino === "corporativo" ? "selected" : ""}>Corporativo</option>
+                <option value="transferencia" ${filtros.destino === "transferencia" ? "selected" : ""}>Transferência entre contas</option>
+                ${opcoesProjetosFinanceiro(filtros.destino)}
+            </select></label>
+            <label class="busca">Buscar<input name="busca" value="${escapeHtml(filtros.busca)}" placeholder="descrição ou observação"></label>
+            <button type="submit">Filtrar</button>
+        </form>
+        <section class="painel">
+            <div class="painel-topo"><h2>Lançamentos</h2><span>${lista.length} lançamento(s) · ${formatData(filtros.de)} a ${formatData(filtros.ate)}</span></div>
+            <form id="loteFinanceiro" class="lote-financeiro" ${financeiroSelecionados.size ? "" : "hidden"}>
+                <strong>${financeiroSelecionados.size} selecionado(s)</strong>
+                <label>Categoria<select name="categoria">
+                    <option value="">Manter</option>
+                    ${["receita", "despesa", "ambos"].map((tipo) => `<optgroup label="${rotuloTipoCategoria[tipo]}">${categoriasAtivas.filter((c) => c.tipo === tipo).map((c) => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join("")}</optgroup>`).join("")}
+                </select></label>
+                <label>Destino<select name="destino">
+                    <option value="manter">Manter</option>
+                    <option value="corporativo">Corporativo</option>
+                    <option value="transferencia">Transferência entre contas</option>
+                    ${opcoesProjetosFinanceiro("")}
+                </select></label>
+                <button type="submit">Aplicar</button>
+                <button class="secundario" type="button" id="limparSelecaoFinanceiro">Limpar seleção</button>
+            </form>
+            ${lista.length ? `
+            <div class="tabela-rolagem">
+                <table class="tabela-extrato">
+                    <thead><tr>
+                        <th><input type="checkbox" id="selecionarTodosFinanceiro" aria-label="Selecionar todos" ${todosSelecionados ? "checked" : ""}></th>
+                        <th>Data</th><th>Descrição</th><th>Valor</th><th>Categoria</th><th>Destino</th><th>Observação</th>
+                    </tr></thead>
+                    <tbody>
+                        ${lista.map((l) => `
+                            <tr class="${lancamentoPendente(l) ? "lancamento-pendente" : ""}">
+                                <td><input type="checkbox" class="fin-selecionar" data-id="${l.id}" aria-label="Selecionar lançamento" ${financeiroSelecionados.has(l.id) ? "checked" : ""}></td>
+                                <td>${escapeHtml(formatData(l.data))}</td>
+                                <td class="fin-descricao">${escapeHtml(l.descricao || "—")}</td>
+                                <td class="fin-valor ${l.valor < 0 ? "saida" : "entrada"}">${l.valor < 0 ? "−" : "+"} ${formatMoeda(Math.abs(l.valor))}</td>
+                                <td><select class="fin-categoria" data-id="${l.id}" aria-label="Categoria">${opcoesCategoriaFinanceiro(l.valor, l.categoria_id)}</select></td>
+                                <td><select class="fin-destino" data-id="${l.id}" aria-label="Destino">${opcoesDestinoFinanceiro(valorDestinoLancamento(l))}</select></td>
+                                <td><input class="fin-observacao" data-id="${l.id}" value="${escapeHtml(l.observacao || "")}" placeholder="—" aria-label="Observação"></td>
+                            </tr>
+                        `).join("")}
+                    </tbody>
+                </table>
+            </div>` : `<p class="vazio">${financeiroLancamentos.length ? "Nenhum lançamento com esse filtro." : `Nenhum lançamento neste período. Use "Importar extrato OFX" para trazer o extrato do Mercado Pago.`}</p>`}
+        </section>
+        <section class="painel financeiro-resumos">
+            <div class="painel-topo"><div><h2>Resumo do filtro</h2><p class="subtexto">Transferências entre contas ficam fora${resumo.transferencias ? ` (saldo de ${formatMoeda(resumo.transferencias)} no período)` : ""}.</p></div></div>
+            <div class="grid-duas-colunas">
+                ${renderTabelaResumoFinanceiro("Por categoria", "Categoria", resumo.porCategoria)}
+                ${renderTabelaResumoFinanceiro("Por destino", "Destino", resumo.porDestino)}
+            </div>
+        </section>
+        <details class="painel financeiro-secao">
+            <summary><h2>Importações</h2><span>${cache.financeiroImportacoes.length} arquivo(s)</span></summary>
+            ${cache.financeiroImportacoes.length ? `<div class="lista-compacta">${cache.financeiroImportacoes.map((item) => `
+                <article><div><strong>${escapeHtml(item.arquivo_nome)}</strong><span>${escapeHtml(formatData(item.periodo_inicio))} a ${escapeHtml(formatData(item.periodo_fim))} · ${item.novos} novo(s) de ${item.total_lancamentos} · ${escapeHtml(item.importado_por || "")} · ${escapeHtml(formatDataHora(item.criado_em))}</span></div>
+                <button class="secundario botao-excluir-texto desfazer-importacao" type="button" data-id="${item.id}" data-arquivo="${escapeHtml(item.arquivo_nome)}" data-novos="${item.novos}">Desfazer</button></article>
+            `).join("")}</div>` : `<p class="vazio compacto">Nenhum extrato importado ainda.</p>`}
+        </details>
+        <details class="painel financeiro-secao">
+            <summary><h2>Categorias</h2><span>${cache.financeiroCategorias.length} categoria(s)</span></summary>
+            <p class="subtexto">O destino padrão é aplicado ao escolher a categoria em um lançamento ainda sem destino.</p>
+            <div class="lista-categorias-financeiro">
+                ${cache.financeiroCategorias.map((categoria) => `
+                    <form class="categoria-financeiro-form mini-form" data-id="${categoria.id}">
+                        <input name="nome" value="${escapeHtml(categoria.nome)}" required aria-label="Nome">
+                        <select name="tipo" aria-label="Tipo">${["receita", "despesa", "ambos"].map((tipo) => `<option value="${tipo}" ${categoria.tipo === tipo ? "selected" : ""}>${rotuloTipoCategoria[tipo]}</option>`).join("")}</select>
+                        <select name="destino_padrao" aria-label="Destino padrão"><option value="">Sem destino padrão</option>${Object.entries(DESTINOS_FINANCEIRO).map(([valor, rotulo]) => `<option value="${valor}" ${categoria.destino_padrao === valor ? "selected" : ""}>${rotulo}</option>`).join("")}</select>
+                        <label class="checkbox linha-checkbox"><input type="checkbox" name="ativo" ${categoria.ativo ? "checked" : ""}> Ativa</label>
+                        <button type="submit">Salvar</button>
+                    </form>
+                `).join("")}
+            </div>
+            <form id="novaCategoriaFinanceiro" class="mini-form categoria-financeiro-form">
+                <input name="nome" placeholder="Nova categoria" required aria-label="Nome da nova categoria">
+                <select name="tipo" aria-label="Tipo"><option value="despesa">Despesas</option><option value="receita">Receitas</option><option value="ambos">Receitas e despesas</option></select>
+                <select name="destino_padrao" aria-label="Destino padrão"><option value="">Sem destino padrão</option>${Object.entries(DESTINOS_FINANCEIRO).map(([valor, rotulo]) => `<option value="${valor}">${rotulo}</option>`).join("")}</select>
+                <button type="submit">Adicionar categoria</button>
+            </form>
+        </details>
+    `;
+    bindFinanceiro();
+    window.scrollTo(0, rolagem);
+    if (financeiroMensagemPendente) {
+        setMensagem(...financeiroMensagemPendente);
+        financeiroMensagemPendente = null;
+    }
+}
+
+function bindFinanceiro() {
+    $("#arquivoOfx").addEventListener("change", (event) => {
+        const arquivo = event.target.files?.[0];
+        event.target.value = "";
+        if (arquivo) importarOfx(arquivo);
+    });
+    $("#filtroFinanceiro").addEventListener("submit", (event) => {
+        event.preventDefault();
+        location.hash = `financeiro?${new URLSearchParams(new FormData(event.target)).toString()}`;
+    });
+    document.querySelectorAll(".fin-selecionar").forEach((caixa) => caixa.addEventListener("change", () => {
+        const id = Number(caixa.dataset.id);
+        if (caixa.checked) financeiroSelecionados.add(id);
+        else financeiroSelecionados.delete(id);
+        desenharFinanceiro();
+    }));
+    $("#selecionarTodosFinanceiro")?.addEventListener("change", (event) => {
+        const visiveis = filtrarLancamentosFinanceiro(financeiroLancamentos, filtrosFinanceiro());
+        financeiroSelecionados = event.target.checked ? new Set(visiveis.map((l) => l.id)) : new Set();
+        desenharFinanceiro();
+    });
+    $("#limparSelecaoFinanceiro")?.addEventListener("click", () => {
+        financeiroSelecionados = new Set();
+        desenharFinanceiro();
+    });
+    $("#loteFinanceiro")?.addEventListener("submit", aplicarLoteFinanceiro);
+    document.querySelectorAll(".fin-categoria").forEach((select) => select.addEventListener("change", () => {
+        const lancamento = financeiroLancamentos.find((l) => l.id === Number(select.dataset.id));
+        const categoria = categoriaFinanceira(Number(select.value));
+        const payload = { categoria_id: categoria ? categoria.id : null };
+        if (categoria?.destino_padrao && categoria.destino_padrao !== "projeto" && !lancamento.destino) {
+            Object.assign(payload, payloadDestino(categoria.destino_padrao));
+        }
+        atualizarLancamentosFinanceiro([lancamento.id], payload);
+    }));
+    document.querySelectorAll(".fin-destino").forEach((select) => select.addEventListener("change", () => {
+        atualizarLancamentosFinanceiro([Number(select.dataset.id)], payloadDestino(select.value));
+    }));
+    document.querySelectorAll(".fin-observacao").forEach((campo) => campo.addEventListener("change", () => {
+        atualizarLancamentosFinanceiro([Number(campo.dataset.id)], { observacao: campo.value.trim() || null });
+    }));
+    document.querySelectorAll(".desfazer-importacao").forEach((botao) => botao.addEventListener("click", () => desfazerImportacaoFinanceiro(botao)));
+    document.querySelectorAll(".categoria-financeiro-form[data-id]").forEach((form) => form.addEventListener("submit", salvarCategoriaFinanceiro));
+    $("#novaCategoriaFinanceiro").addEventListener("submit", criarCategoriaFinanceiro);
+}
+
+async function atualizarLancamentosFinanceiro(ids, payload) {
+    if (!ids.length) return;
+    const { data, error } = await supabase.from("financeiro_lancamentos").update(payload).in("id", ids).select("*");
+    if (error) return setMensagem(error.message, "erro");
+    const atualizados = new Map(data.map((linha) => [linha.id, linha]));
+    financeiroLancamentos = financeiroLancamentos.map((linha) => atualizados.get(linha.id) || linha);
+    desenharFinanceiro();
+}
+
+async function aplicarLoteFinanceiro(event) {
+    event.preventDefault();
+    const dados = Object.fromEntries(new FormData(event.target).entries());
+    const selecionados = financeiroLancamentos.filter((l) => financeiroSelecionados.has(l.id));
+    const categoria = categoriaFinanceira(Number(dados.categoria));
+    if (!categoria && dados.destino === "manter") return setMensagem("Escolha uma categoria ou um destino para aplicar.", "erro");
+    let ignorados = 0;
+    if (categoria) {
+        const compativeis = selecionados.filter((l) => categoriaCompativel(categoria, l.valor));
+        ignorados = selecionados.length - compativeis.length;
+        if (!compativeis.length) return setMensagem(`A categoria "${categoria.nome}" não serve para nenhum dos lançamentos selecionados.`, "erro");
+        const { error } = await supabase.from("financeiro_lancamentos").update({ categoria_id: categoria.id }).in("id", compativeis.map((l) => l.id));
+        if (error) return setMensagem(error.message, "erro");
+        if (dados.destino === "manter" && categoria.destino_padrao && categoria.destino_padrao !== "projeto") {
+            const semDestino = compativeis.filter((l) => !l.destino).map((l) => l.id);
+            if (semDestino.length) {
+                const { error: erroDestino } = await supabase.from("financeiro_lancamentos").update(payloadDestino(categoria.destino_padrao)).in("id", semDestino);
+                if (erroDestino) return setMensagem(erroDestino.message, "erro");
+            }
+        }
+    }
+    if (dados.destino !== "manter") {
+        const { error } = await supabase.from("financeiro_lancamentos").update(payloadDestino(dados.destino)).in("id", selecionados.map((l) => l.id));
+        if (error) return setMensagem(error.message, "erro");
+    }
+    financeiroSelecionados = new Set();
+    const partes = [];
+    if (categoria) partes.push(`Categoria "${categoria.nome}" aplicada em ${selecionados.length - ignorados} lançamento(s)`);
+    if (dados.destino !== "manter") partes.push(`destino aplicado em ${selecionados.length}`);
+    if (ignorados) partes.push(`categoria não aplicada em ${ignorados} ${categoria.tipo === "receita" ? "saída(s)" : "entrada(s)"}, por não servir para ${categoria.tipo === "receita" ? "saídas" : "entradas"}`);
+    const mensagemLote = partes.join("; ");
+    financeiroMensagemPendente = [`${mensagemLote.charAt(0).toUpperCase()}${mensagemLote.slice(1)}.`];
+    await renderFinanceiro();
+}
+
+function nomeContaOfx(extrato) {
+    const banco = ["323", "0323"].includes(String(extrato.bancoId)) ? "Mercado Pago" : `Banco ${extrato.bancoId || "?"}`;
+    return extrato.contaId ? `${banco} · conta ${extrato.contaId}` : banco;
+}
+
+function confirmarImportacaoOfx(texto, podeImportar) {
+    let modal = $("#importarOfxModal");
+    if (!modal) {
+        modal = document.createElement("dialog");
+        modal.id = "importarOfxModal";
+        modal.className = "modal-confirmar-exclusao modal-importar-ofx";
+        modal.innerHTML = `
+            <h2>Importar extrato</h2>
+            <p class="confirmar-exclusao-mensagem"></p>
+            <div class="card-acoes">
+                <button class="secundario" type="button" value="cancelar">Cancelar</button>
+                <button type="button" value="importar">Importar</button>
+            </div>
+        `;
+        document.body.append(modal);
+        modal.querySelectorAll("button").forEach((botao) => botao.addEventListener("click", () => responderDialogo(modal, botao.value === "importar")));
+        modal.addEventListener("close", () => responderDialogo(modal, false));
+    }
+    modal.querySelector(".confirmar-exclusao-mensagem").textContent = texto;
+    modal.querySelector('[value="importar"]').hidden = !podeImportar;
+    return abrirDialogo(modal);
+}
+
+async function importarOfx(arquivo) {
+    let extrato;
+    try {
+        extrato = lerOfx(decodificarOfx(await arquivo.arrayBuffer()));
+    } catch (error) {
+        return setMensagem(error.message || "Não foi possível ler o arquivo OFX.", "erro");
+    }
+    if (!extrato.lancamentos.length) return setMensagem("Nenhum lançamento encontrado no arquivo.", "erro");
+
+    let conta = cache.financeiroContas.find((c) => c.banco_id === extrato.bancoId && c.conta_id === extrato.contaId);
+    const existentes = new Set();
+    if (conta) {
+        const fitids = extrato.lancamentos.map((l) => l.fitid);
+        for (let inicio = 0; inicio < fitids.length; inicio += 150) {
+            const { data, error } = await supabase.from("financeiro_lancamentos").select("fitid").eq("conta_id", conta.id).in("fitid", fitids.slice(inicio, inicio + 150));
+            if (error) return setMensagem(error.message, "erro");
+            data.forEach((linha) => existentes.add(linha.fitid));
+        }
+    }
+    const novos = extrato.lancamentos.filter((l) => !existentes.has(l.fitid));
+    const entradas = novos.filter((l) => l.valor >= 0).reduce((soma, l) => soma + l.valor, 0);
+    const saidas = novos.filter((l) => l.valor < 0).reduce((soma, l) => soma - l.valor, 0);
+    const texto = [
+        `Arquivo: ${arquivo.name}`,
+        `Conta: ${conta?.nome || nomeContaOfx(extrato)}${conta ? "" : " (nova)"}`,
+        `Período: ${formatData(extrato.periodoInicio)} a ${formatData(extrato.periodoFim)}`,
+        extrato.saldoFinal !== null ? `Saldo no extrato: ${formatMoeda(extrato.saldoFinal)} em ${formatData(extrato.saldoData)}` : "",
+        "",
+        `${extrato.lancamentos.length} lançamento(s) no arquivo`,
+        existentes.size ? `${existentes.size} já importado(s) antes, serão ignorados` : "",
+        novos.length ? `${novos.length} novo(s): ${formatMoeda(entradas)} em entradas e ${formatMoeda(saidas)} em saídas` : "Nenhum lançamento novo para importar.",
+    ].filter((linha, indice) => linha || indice === 4).join("\n");
+    if (!(await confirmarImportacaoOfx(texto, novos.length > 0))) return;
+
+    if (!conta) {
+        const { data, error } = await supabase.from("financeiro_contas").insert({ nome: nomeContaOfx(extrato), banco_id: extrato.bancoId, conta_id: extrato.contaId }).select().single();
+        if (error) return setMensagem(error.message, "erro");
+        conta = data;
+    }
+    const { data: importacao, error: erroImportacao } = await supabase.from("financeiro_importacoes").insert({
+        conta_id: conta.id,
+        arquivo_nome: arquivo.name,
+        periodo_inicio: extrato.periodoInicio,
+        periodo_fim: extrato.periodoFim,
+        saldo_final: extrato.saldoFinal,
+        saldo_data: extrato.saldoData,
+        total_lancamentos: extrato.lancamentos.length,
+    }).select().single();
+    if (erroImportacao) return setMensagem(erroImportacao.message, "erro");
+
+    let inseridos = 0;
+    for (let inicio = 0; inicio < novos.length; inicio += 500) {
+        const linhas = novos.slice(inicio, inicio + 500).map((l) => ({ ...l, conta_id: conta.id, importacao_id: importacao.id }));
+        const { data, error } = await supabase.from("financeiro_lancamentos").upsert(linhas, { onConflict: "conta_id,fitid", ignoreDuplicates: true }).select("id");
+        if (error) return setMensagem(`Importação interrompida: ${error.message}. ${inseridos} lançamento(s) já gravado(s); use "Desfazer" em Importações e tente de novo.`, "erro");
+        inseridos += data.length;
+    }
+    await supabase.from("financeiro_importacoes").update({ novos: inseridos }).eq("id", importacao.id);
+
+    financeiroMensagemPendente = [`${inseridos} lançamento(s) importado(s). Agora é só classificar.`];
+    const destino = `#financeiro?${new URLSearchParams({ de: extrato.periodoInicio, ate: extrato.periodoFim }).toString()}`;
+    if (location.hash === destino) await render();
+    else location.hash = destino;
+}
+
+async function desfazerImportacaoFinanceiro(botao) {
+    const confirmado = await confirmarExclusao(`Desfazer a importação "${botao.dataset.arquivo}"?\n\n${botao.dataset.novos} lançamento(s) trazido(s) por ela e as classificações feitas neles serão apagados.`);
+    if (!confirmado) return;
+    const { data, error } = await supabase.from("financeiro_importacoes").delete().eq("id", Number(botao.dataset.id)).select("id");
+    if (error) return setMensagem(error.message, "erro");
+    if (!data?.length) return setMensagem("Nada foi desfeito. Verifique sua permissão.", "erro");
+    financeiroMensagemPendente = ["Importação desfeita."];
+    await render();
+}
+
+function dadosCategoriaFinanceiro(form) {
+    const dados = Object.fromEntries(new FormData(form).entries());
+    return {
+        nome: dados.nome.trim(),
+        tipo: dados.tipo,
+        destino_padrao: dados.destino_padrao || null,
+        ...(form.dataset.id ? { ativo: Boolean(dados.ativo) } : {}),
+    };
+}
+
+async function salvarCategoriaFinanceiro(event) {
+    event.preventDefault();
+    const { error } = await supabase.from("financeiro_categorias").update(dadosCategoriaFinanceiro(event.target)).eq("id", Number(event.target.dataset.id));
+    if (error) return setMensagem(error.message, "erro");
+    financeiroMensagemPendente = ["Categoria salva."];
+    await render();
+}
+
+async function criarCategoriaFinanceiro(event) {
+    event.preventDefault();
+    const ordem = Math.max(0, ...cache.financeiroCategorias.map((categoria) => categoria.ordem || 0)) + 10;
+    const { error } = await supabase.from("financeiro_categorias").insert({ ...dadosCategoriaFinanceiro(event.target), ordem });
+    if (error) return setMensagem(error.message, "erro");
+    financeiroMensagemPendente = ["Categoria adicionada."];
     await render();
 }
 
