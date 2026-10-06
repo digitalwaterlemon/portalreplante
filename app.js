@@ -1613,39 +1613,42 @@ function renderCalendario() {
     const fimIso = fim.toISOString().slice(0, 10);
     const eventos = eventosCalendario()
         .filter((evento) => evento.data >= inicio && evento.data < fimIso)
-        .sort((a, b) => a.data.localeCompare(b.data) || (a.tipo === "contato" ? -1 : 1));
+        .sort((a, b) => a.data.localeCompare(b.data) || ordemEventoNoDia(a).localeCompare(ordemEventoNoDia(b)));
     // Na lista do mes, cada intervencao de varios dias aparece uma vez so.
     const vistos = new Set();
     const eventosLista = eventos.filter((evento) => {
-        const chave = `${evento.tipo}-${evento.item.id}`;
+        const chave = `${evento.tipo}-${evento.item?.id ?? evento.contatoProspeccao.id}`;
         if (vistos.has(chave)) return false;
         vistos.add(chave);
         return true;
     });
     const totalExecucoes = eventosLista.filter((evento) => evento.tipo === "execucao").length;
-    const totalContatos = eventosLista.length - totalExecucoes;
+    const totalContatos = eventosLista.filter((evento) => evento.tipo === "contato").length;
+    const totalProspeccao = eventosLista.filter(eventoDeProspeccao).length;
     const dias = montarDiasCalendario(mes, eventos);
 
-    setPage("Calendário", "Agenda de plantios e manutenções", `<a class="botao secundario" href="#projetos">Projetos</a>`);
+    setPage("Calendário", "Serviços, contatos e reuniões", `<a class="botao secundario" href="#projetos">Projetos</a><a class="botao secundario" href="#prospeccao">Prospecção</a>`);
     conteudo.innerHTML = `
         <form id="filtroCalendario" class="filtros">
             <label>Mês<input name="mes" type="month" value="${escapeHtml(mes)}"></label>
             <button type="submit">Ver agenda</button>
         </form>
         <section class="painel">
-            <div class="painel-topo"><h2>Agenda de ${escapeHtml(mes)}</h2><span>${totalExecucoes} intervenção(ões) · ${totalContatos} contato(s)</span></div>
+            <div class="painel-topo"><h2>Agenda de ${escapeHtml(mes)}</h2><span>${totalExecucoes} intervenção(ões) · ${totalContatos} contato(s) com cliente · ${totalProspeccao} da prospecção</span></div>
             <div class="calendario-legenda">
                 <span class="legenda-execucao">Plantio / manutenção</span>
                 <span class="legenda-contato">Contatar cliente</span>
                 <span class="legenda-contato-atrasado">Contato atrasado</span>
                 <span class="legenda-contato-feito">Contato feito</span>
+                <span class="legenda-prospeccao">Prospecção: próximo contato</span>
+                <span class="legenda-reuniao">Reunião agendada</span>
             </div>
             <div class="calendario-grade">
                 ${["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"].map((dia) => `<strong class="calendario-semana">${dia}</strong>`).join("")}
                 ${dias.map(renderDiaCalendario).join("")}
             </div>
             <div class="agenda-lista">
-                ${eventosLista.length ? eventosLista.map(renderAgendaItem).join("") : `<p class="vazio">Nenhum plantio, manutenção ou contato previsto para este mês.</p>`}
+                ${eventosLista.length ? eventosLista.map(renderAgendaItem).join("") : `<p class="vazio">Nenhum serviço, contato ou reunião previsto para este mês.</p>`}
             </div>
         </section>
         <dialog id="projetoModal" class="modal-projeto">
@@ -1666,6 +1669,7 @@ function renderCalendario() {
 
 function renderProspeccao() {
     const contatos = cache.prospeccaoContatos;
+    const contatoAberto = Number(new URLSearchParams(location.hash.split("?")[1] || "").get("contato")) || null;
     const pendentes = contatos.filter((item) => item.status_reuniao !== "realizada" && item.status_reuniao !== "nao_interessado");
     setPage("Prospecção", "Clientes e contatos em desenvolvimento", `<a class="botao secundario" href="#projetos">Projetos</a>`);
     conteudo.innerHTML = `
@@ -1677,7 +1681,8 @@ function renderProspeccao() {
                 <label>CNPJ<input name="cnpj" inputmode="numeric"></label>
                 <label>E-mail<input name="email" type="email"></label>
                 <label>Telefones<input name="telefones" placeholder="(41) 99999-9999"></label>
-                <label>Próxima ação<input name="proxima_acao_em" type="date"></label>
+                <label>Próximo contato<input name="proxima_acao_em" type="date"></label>
+                <label>Reunião (data e hora)<input name="reuniao_em" type="datetime-local"></label>
                 <label>Status do e-mail<select name="status_email">${opcoesSelect(STATUS_EMAIL_PROSPECCAO, "pendente")}</select></label>
                 <label>Status do WhatsApp<select name="status_whatsapp">${opcoesSelect(STATUS_WHATSAPP_PROSPECCAO, "pendente")}</select></label>
                 <label>Status da reunião<select name="status_reuniao">${opcoesSelect(STATUS_REUNIAO_PROSPECCAO, "nao_agendada")}</select></label>
@@ -1688,20 +1693,22 @@ function renderProspeccao() {
         <section class="painel lista-prospeccao-painel">
             <div class="painel-topo"><div><h2>Carteira de prospecção</h2><p class="subtexto">${pendentes.length} contato(s) ainda em acompanhamento.</p></div></div>
             <div class="lista-prospeccao">
-                ${contatos.length ? contatos.map(renderContatoProspeccao).join("") : `<p class="vazio">Nenhum contato cadastrado.</p>`}
+                ${contatos.length ? contatos.map((contato) => renderContatoProspeccao(contato, contato.id === contatoAberto)).join("") : `<p class="vazio">Nenhum contato cadastrado.</p>`}
             </div>
         </section>
     `;
     $("#novoContatoProspeccao").addEventListener("submit", criarContatoProspeccao);
     document.querySelectorAll(".prospeccao-contato-form").forEach((form) => form.addEventListener("submit", salvarContatoProspeccao));
+    if (contatoAberto) document.querySelector(`#contato-prospeccao-${contatoAberto}`)?.scrollIntoView({ block: "center" });
 }
 
-function renderContatoProspeccao(contato) {
+function renderContatoProspeccao(contato, aberto = false) {
+    const reuniao = contato.reuniao_em ? ` · ${formatData(contato.reuniao_em.slice(0, 10))} ${contato.reuniao_em.slice(11, 16)}` : "";
     return `
-        <details class="contato-prospeccao">
+        <details class="contato-prospeccao" id="contato-prospeccao-${contato.id}" ${aberto ? "open" : ""}>
             <summary>
                 <span><strong>${escapeHtml(contato.nome_fantasia)}</strong><small>${escapeHtml(contato.razao_social || contato.email || "Sem razão social")}</small></span>
-                <em>${escapeHtml(formatStatus(contato.status_reuniao))}</em>
+                <em>${escapeHtml(formatStatus(contato.status_reuniao) + reuniao)}</em>
                 <time>${escapeHtml(formatData(contato.proxima_acao_em))}</time>
             </summary>
             <form class="prospeccao-contato-form prospeccao-form-grid" data-id="${contato.id}">
@@ -1710,7 +1717,8 @@ function renderContatoProspeccao(contato) {
                 <label>CNPJ<input name="cnpj" value="${escapeHtml(contato.cnpj || "")}"></label>
                 <label>E-mail<input name="email" type="email" value="${escapeHtml(contato.email || "")}"></label>
                 <label>Telefones<input name="telefones" value="${escapeHtml(contato.telefones || "")}"></label>
-                <label>Próxima ação<input name="proxima_acao_em" type="date" value="${escapeHtml(contato.proxima_acao_em || "")}"></label>
+                <label>Próximo contato<input name="proxima_acao_em" type="date" value="${escapeHtml(contato.proxima_acao_em || "")}"></label>
+                <label>Reunião (data e hora)<input name="reuniao_em" type="datetime-local" value="${escapeHtml((contato.reuniao_em || "").slice(0, 16))}"></label>
                 <label>Status do e-mail<select name="status_email">${opcoesSelect(STATUS_EMAIL_PROSPECCAO, contato.status_email)}</select></label>
                 <label>Status do WhatsApp<select name="status_whatsapp">${opcoesSelect(STATUS_WHATSAPP_PROSPECCAO, contato.status_whatsapp)}</select></label>
                 <label>Status da reunião<select name="status_reuniao">${opcoesSelect(STATUS_REUNIAO_PROSPECCAO, contato.status_reuniao)}</select></label>
@@ -1730,8 +1738,10 @@ function dadosContatoProspeccao(dados) {
         telefones: dados.telefones?.trim() || null,
         status_email: dados.status_email || "pendente",
         status_whatsapp: dados.status_whatsapp || "pendente",
-        status_reuniao: dados.status_reuniao || "nao_agendada",
+        // Informar a data da reuniao ja marca a reuniao como agendada.
+        status_reuniao: dados.reuniao_em && (dados.status_reuniao || "nao_agendada") === "nao_agendada" ? "agendada" : (dados.status_reuniao || "nao_agendada"),
         proxima_acao_em: dados.proxima_acao_em || null,
+        reuniao_em: dados.reuniao_em || null,
         observacoes: dados.observacoes?.trim() || null,
     };
 }
@@ -1905,10 +1915,45 @@ function eventosCalendario() {
         const contato = contatoManutencao(item, hoje);
         if (contato) eventos.push({ tipo: "contato", ...contato, item });
     }
+    eventos.push(...eventosProspeccao(hoje));
     return eventos;
 }
 
+// Prospeccao no calendario: proximo contato (proxima_acao_em) e reuniao
+// (reuniao_em). Contatos "nao interessado" ficam de fora.
+function eventosProspeccao(hoje) {
+    const eventos = [];
+    for (const contatoProspeccao of cache.prospeccaoContatos) {
+        if (contatoProspeccao.status_reuniao === "nao_interessado") continue;
+        if (contatoProspeccao.proxima_acao_em) {
+            const data = contatoProspeccao.proxima_acao_em;
+            eventos.push({ tipo: "prospeccao", data, contatoProspeccao, situacao: data < hoje ? "atrasado" : "pendente" });
+        }
+        if (contatoProspeccao.reuniao_em && ["agendada", "realizada"].includes(contatoProspeccao.status_reuniao)) {
+            const data = contatoProspeccao.reuniao_em.slice(0, 10);
+            const situacao = contatoProspeccao.status_reuniao === "realizada" ? "feito" : data < hoje ? "atrasado" : "pendente";
+            eventos.push({ tipo: "reuniao", data, hora: contatoProspeccao.reuniao_em.slice(11, 16), contatoProspeccao, situacao });
+        }
+    }
+    return eventos;
+}
+
+function ordemEventoNoDia(evento) {
+    if (evento.tipo === "reuniao") return `0-${evento.hora}`;
+    if (evento.tipo === "contato" || evento.tipo === "prospeccao") return "1";
+    return "2";
+}
+
+function eventoDeProspeccao(evento) {
+    return evento.tipo === "prospeccao" || evento.tipo === "reuniao";
+}
+
 function rotuloEvento(evento) {
+    if (eventoDeProspeccao(evento)) {
+        const nome = evento.contatoProspeccao.nome_fantasia;
+        if (evento.tipo === "reuniao") return evento.situacao === "feito" ? `Reunião realizada: ${nome}` : `Reunião ${evento.hora}: ${nome}`;
+        return evento.situacao === "atrasado" ? `Contato atrasado: ${nome}` : `Prospecção: contatar ${nome}`;
+    }
     if (evento.tipo === "execucao") {
         return evento.totalDias > 1 ? `${evento.item.titulo} (dia ${evento.dia}/${evento.totalDias})` : evento.item.titulo;
     }
@@ -1918,10 +1963,37 @@ function rotuloEvento(evento) {
 }
 
 function classeEvento(evento) {
-    return evento.tipo === "execucao" ? "evento-execucao" : `evento-contato contato-${evento.situacao}`;
+    if (evento.tipo === "execucao") return "evento-execucao";
+    if (evento.tipo === "reuniao") return `evento-reuniao reuniao-${evento.situacao}`;
+    if (evento.tipo === "prospeccao") return `evento-prospeccao prospeccao-${evento.situacao}`;
+    return `evento-contato contato-${evento.situacao}`;
+}
+
+function linkContatoProspeccao(contatoProspeccao) {
+    return `#prospeccao?contato=${contatoProspeccao.id}`;
+}
+
+function renderAgendaItemProspeccao(evento) {
+    const contatoProspeccao = evento.contatoProspeccao;
+    const quando = evento.tipo === "reuniao" ? `${formatData(evento.data)} ${evento.hora}` : formatData(evento.data);
+    const situacao = evento.tipo === "reuniao"
+        ? (evento.situacao === "atrasado" ? "Reunião passou: marque como realizada" : formatStatus(contatoProspeccao.status_reuniao))
+        : "Próximo contato da prospecção";
+    return `
+        <article class="agenda-item ${classeEvento(evento)}">
+            <time>${escapeHtml(quando)}</time>
+            <div>
+                <strong>${escapeHtml(rotuloEvento(evento))}</strong>
+                <span>${escapeHtml([contatoProspeccao.razao_social, contatoProspeccao.telefones].filter(Boolean).join(" · ") || "Prospecção")}</span>
+            </div>
+            <em>${escapeHtml(situacao)}</em>
+            <a class="botao secundario" href="${linkContatoProspeccao(contatoProspeccao)}">Abrir</a>
+        </article>
+    `;
 }
 
 function renderAgendaItem(evento) {
+    if (eventoDeProspeccao(evento)) return renderAgendaItemProspeccao(evento);
     const item = evento.item;
     const projeto = item.projetos || {};
     const data = evento.tipo === "execucao" ? formatPeriodo(item) : formatData(evento.data);
@@ -1970,6 +2042,14 @@ function renderDiaCalendario(dia) {
 }
 
 function renderEventoCalendario(evento) {
+    if (eventoDeProspeccao(evento)) {
+        return `
+            <a class="evento-calendario ${classeEvento(evento)}" href="${linkContatoProspeccao(evento.contatoProspeccao)}">
+                <strong>${escapeHtml(rotuloEvento(evento))}</strong>
+                <span>Prospecção</span>
+            </a>
+        `;
+    }
     const item = evento.item;
     const projeto = item.projetos || {};
     return `

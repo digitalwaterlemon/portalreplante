@@ -2137,6 +2137,58 @@ button.botao-excluir-texto {
     opacity: 0.85;
 }
 
+a.evento-calendario { text-decoration: none; }
+
+/* Prospeccao: proximo contato (magenta) e reuniao (roxo), com faixa a
+   esquerda para se destacar dos servicos em verde. */
+.evento-calendario.prospeccao-pendente {
+    background: #fce4f1;
+    border-color: #ec9cc6;
+    border-left: 4px solid #c2185b;
+    color: #9c1450;
+}
+
+.evento-calendario.reuniao-pendente,
+.evento-calendario.reuniao-atrasado,
+.evento-calendario.prospeccao-atrasado {
+    border-left-width: 4px;
+}
+
+.evento-calendario.prospeccao-atrasado,
+.evento-calendario.reuniao-atrasado {
+    background: #fff4e0;
+    border-color: #ecc98a;
+    color: #8a5a12;
+}
+
+.evento-calendario.reuniao-pendente {
+    background: #f1ecfa;
+    border-color: #cdbdea;
+    border-left-color: #6b46c1;
+    color: #5b3f99;
+}
+
+.evento-calendario.reuniao-feito {
+    background: #f2f4f7;
+    border-color: var(--linha);
+    color: var(--muted);
+}
+
+.evento-calendario.evento-prospeccao span,
+.evento-calendario.evento-reuniao span {
+    color: inherit;
+    opacity: 0.85;
+}
+
+.agenda-item.prospeccao-pendente time { color: #9c1450; }
+.agenda-item.reuniao-pendente time { color: #5b3f99; }
+.agenda-item.prospeccao-atrasado time,
+.agenda-item.reuniao-atrasado time { color: #8a5a12; }
+.agenda-item.reuniao-feito time { color: var(--muted); }
+
+.legenda-prospeccao::before { background: #fce4f1; border-color: #c2185b; }
+.legenda-reuniao::before { background: #f1ecfa; border-color: #cdbdea; }
+
 .agenda-item.contato-pendente time { color: var(--azul); }
 .agenda-item.contato-atrasado time { color: #8a5a12; }
 .agenda-item.contato-feito time { color: var(--muted); }
